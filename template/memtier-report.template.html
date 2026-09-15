@@ -167,6 +167,8 @@ details > summary { cursor: pointer; font-weight: 600; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
 .note { font-size: 12px; color: var(--ink-2); border-left: 3px solid var(--axis); padding: 4px 10px; margin: 8px 0 0; }
 footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
+footer p { margin: 0 0 4px; }
+footer a { color: var(--accent); }
 @media (max-width: 860px) {
   .cand { grid-template-columns: 1fr; gap: 8px; }
   .cand .fig { justify-content: start; }
@@ -279,7 +281,10 @@ footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
       </details>
     </section>
   </main>
-  <footer id="footer"></footer>
+  <footer>
+    <p id="footer"></p>
+    <p>Community project, not affiliated with or endorsed by VMware or Broadcom. By <a href="https://dominik.st/einer" target="_blank" rel="noopener">Dominik Steiner</a>.</p>
+  </footer>
 </div>
 <div id="tip" hidden></div>
 

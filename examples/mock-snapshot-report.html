@@ -144,6 +144,8 @@ tbody tr:hover { background: var(--surface-2); }
 #tip .row b { font-variant-numeric: tabular-nums; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
 footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
+footer p { margin: 0 0 4px; }
+footer a { color: var(--accent); }
 @media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 640px) {
   .filters { position: static; }
@@ -230,7 +232,10 @@ footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
     <h2>Collection status</h2>
     <div class="tablewrap"><table id="runTable"></table></div>
   </section>
-  <footer id="footer"></footer>
+  <footer>
+    <p id="footer"></p>
+    <p>Community project, not affiliated with or endorsed by VMware or Broadcom. By <a href="https://dominik.st/einer" target="_blank" rel="noopener">Dominik Steiner</a>.</p>
+  </footer>
 </div>
 <div id="tip" hidden></div>
 

@@ -12,7 +12,11 @@
 
     Real-time statistics are kept on the hosts for about one hour and do not
     depend on the vCenter statistics level, so running this script every hour
-    gives complete coverage. Build the report with New-MemTierReport.ps1.
+    gives complete coverage.
+
+    After every run the trend report is rebuilt with New-MemTierReport.ps1 and
+    <ReportDir>\MemTier_Report.html is overwritten, so it is always up to date.
+    Use -NoReport to collect only.
 
     The CSV format is shared with python/memtier.py.
 .PARAMETER VCenterServer
@@ -23,6 +27,11 @@
     Without it, an existing PowerCLI session or Windows pass-through (SSPI) is used.
 .PARAMETER WindowMinutes
     Minutes of real-time data to read. Must match the schedule interval (max. 60).
+.PARAMETER ReportDir
+    Folder for MemTier_Report.html. Days, ThresholdPct, ColdPct, HotPct, Title, SupportContact,
+    StretchedCluster and StretchedClusterName are passed on to New-MemTierReport.ps1.
+.PARAMETER NoReport
+    Collect only, do not rebuild the report.
 .EXAMPLE
     .\Invoke-MemTierCollector.ps1 -VCenterServer vcenter01.example.com -CredentialFile D:\MemTier\vc-cred.xml -DataDir D:\MemTier\data
 .NOTES
@@ -40,7 +49,18 @@ param (
     [string]$ExcludeVmPattern = '^vCLS-',
     [ValidateRange(1, 1000)][int]$BatchSize = 50,
     [int]$RetentionMonths = 13,
-    [switch]$CompressOldMonths
+    [switch]$CompressOldMonths,
+    [string]$ReportDir,
+    [ValidateRange(1, 800)][int]$Days = 30,
+    [double]$ThresholdPct = 50,
+    [double]$ColdPct = 40,
+    [double]$HotPct = 75,
+    [string]$Title,
+    [string]$SupportContact,
+    [switch]$StretchedCluster,
+    [Alias('StretchedClusters')]
+    [string[]]$StretchedClusterName = @(),
+    [switch]$NoReport
 )
 
 $ErrorActionPreference = 'Stop'
@@ -161,5 +181,15 @@ finally {
     if ($hasLock) { $mutex.ReleaseMutex() }
     $mutex.Dispose()
     if ($transcript) { Stop-Transcript | Out-Null }
+}
+
+# Rebuild the report after the lock is released: a slow report must not block the next collection
+if (-not $NoReport) {
+    $reportArgs = @{ DataDir = $DataDir; LogDir = $LogDir }
+    foreach ($name in 'ReportDir', 'Days', 'ThresholdPct', 'ColdPct', 'HotPct', 'Title', 'SupportContact', 'StretchedCluster', 'StretchedClusterName') {
+        if ($PSBoundParameters.ContainsKey($name)) { $reportArgs[$name] = $PSBoundParameters[$name] }
+    }
+    & (Join-Path $PSScriptRoot 'New-MemTierReport.ps1') @reportArgs
+    if ($LASTEXITCODE -ne 0) { $exitCode = 1 }
 }
 exit $exitCode

@@ -6,6 +6,10 @@
     python/memtier.py), aggregates them and writes one self-contained HTML file
     (no CDN, works offline) based on template\memtier-report.template.html.
 
+    The report is written to <ReportDir>\MemTier_Report.html and overwritten on
+    every run; the CSV files keep the full history. Invoke-MemTierCollector.ps1
+    calls this script after every collection.
+
     The report shows per host and per cluster (N+1) how much of DRAM is actively
     used over time, a weekday x hour heatmap, and per-VM worst-day P95 values.
 .PARAMETER Days
@@ -36,8 +40,7 @@ param (
     [string]$Title = 'VMware Memory Tiering Report',
     [string]$SupportContact = 'dominik.steiner@nts.eu',
     [string]$TemplatePath,
-    [string]$OutputPath,
-    [int]$KeepReports = 30
+    [string]$OutputPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -307,19 +310,20 @@ try {
     if ($pos -lt 0) { throw "template does not contain the data placeholder $($script:DataPlaceholder)" }
     $html = $template.Substring(0, $pos) + $sb.ToString() + $template.Substring($pos + $script:DataPlaceholder.Length)
 
-    if (-not $OutputPath -and -not (Test-Path -LiteralPath $ReportDir)) { New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    $dated = Join-Path $ReportDir ('MemTier_Report_{0}.html' -f (Get-Date).ToString('yyyy-MM-dd_HHmm', $script:Inv))
-    $target = if ($OutputPath) { [System.IO.Path]::GetFullPath($OutputPath) } else { [System.IO.Path]::GetFullPath($dated) }
+    $target = if ($OutputPath) { $OutputPath } else { Join-Path $ReportDir 'MemTier_Report.html' }
+    $target = [System.IO.Path]::GetFullPath($target)
     $targetDir = [System.IO.Path]::GetDirectoryName($target)
     if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
-    [System.IO.File]::WriteAllText($target, $html, $utf8)
-    if (-not $OutputPath) {
-        Copy-Item -LiteralPath $target -Destination (Join-Path $ReportDir 'MemTier_Report_latest.html') -Force
-        if ($KeepReports -gt 0) {
-            $old = @(Get-ChildItem -LiteralPath $ReportDir -Filter 'MemTier_Report_2*.html' | Sort-Object Name)
-            if ($old.Count -gt $KeepReports) { $old[0..($old.Count - $KeepReports - 1)] | Remove-Item -Force }
-        }
+    # Write aside and swap in, so a reader never sees a half-written report
+    $tmp = '{0}.{1}.tmp' -f $target, $PID
+    try {
+        [System.IO.File]::WriteAllText($tmp, $html, $utf8)
+        # [NullString]: a plain $null would reach .NET as "" (no backup file wanted)
+        if (Test-Path -LiteralPath $target) { [System.IO.File]::Replace($tmp, $target, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $target) }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
     Write-MemTierLog ('report written: {0} ({1} hosts, {2} VMs, {3} runs, {4:N1} MB, {5:N1} s)' -f $target, $hostJson.Count, $vmJson.Count,
         $runJson.Count, ($utf8.GetByteCount($html) / 1MB), $sw.Elapsed.TotalSeconds)

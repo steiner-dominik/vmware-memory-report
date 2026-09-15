@@ -3,15 +3,16 @@
 """
 VMware NVMe Memory Tiering: collector and trend report (Python edition)
 
-Runs anywhere with Python 3.6+ and no third-party packages - including directly
-on the vCenter Server Appliance. It talks to vCenter through the VI/JSON API
-(vCenter 8.0 U1 or later, which every memory-tiering-capable vCenter is).
+Runs anywhere with Python 3.6+ and no third-party packages. Run it on a separate
+management VM or jump host, not on the vCenter Server Appliance. It talks to vCenter
+through the VI/JSON API (vCenter 8.0 U1 or later, which every memory-tiering-capable
+vCenter is).
 
 Commands:
-  setup    create the config file interactively, test the login, optionally install cron jobs
+  setup    create the config file interactively, test the login, optionally install the cron job
   collect  pull the last hour of 20-second real-time memory samples, append hourly
-           avg/P95/max per host and VM to monthly CSV files
-  report   build a self-contained HTML trend report from the CSV files
+           avg/P95/max per host and VM to monthly CSV files, then rebuild the report
+  report   build the self-contained HTML trend report from the CSV files
 
 The CSV format and the HTML template are shared with the PowerShell edition, so
 data collected by either edition can be reported by either edition.
@@ -66,6 +67,8 @@ HOST_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.ave
 VM_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.average", "mem.swapped.average"]
 REALTIME_INTERVAL = 20
 DATA_PLACEHOLDER = "/*__MEMTIER_DATA__*/null"
+# Rebuilt and overwritten after every collection; the CSV files keep the full history.
+REPORT_NAME = "MemTier_Report.html"
 
 DEFAULT_CONFIG = """\
 # VMware memory tiering collector - configuration
@@ -113,8 +116,6 @@ cold_pct = 40
 hot_pct = 75
 title = VMware Memory Tiering Report
 support_contact = dominik.steiner@nts.eu
-# Number of dated report files to keep (the *_latest.html file is always updated)
-keep_reports = 30
 # Empty = look next to this script and in ../template
 template =
 """
@@ -276,7 +277,6 @@ class Config(object):
         self.hot_pct = parser.getfloat("report", "hot_pct", fallback=75.0)
         self.title = parser.get("report", "title", fallback="VMware Memory Tiering Report").strip()
         self.support_contact = parser.get("report", "support_contact", fallback="dominik.steiner@nts.eu").strip()
-        self.keep_reports = parser.getint("report", "keep_reports", fallback=30)
         self.template = parser.get("report", "template", fallback="").strip() or None
 
 
@@ -803,6 +803,13 @@ def cmd_collect(cfg, args):
             elif run["Status"] == "partial" and exit_code == 0:
                 exit_code = 2
         maintain_files(cfg.data_dir, now, cfg.compress_old_months, cfg.retention_months)
+    # Outside the lock: a slow report must not block the next collection.
+    if not args.no_report:
+        try:
+            write_report(cfg, cfg.days)
+        except Exception as exc:
+            LOG.error("report failed: %s", exc)
+            exit_code = 1
     return exit_code
 
 
@@ -986,6 +993,11 @@ def cmd_report(cfg, args):
         value = getattr(args, name, None)
         if value is not None:
             setattr(cfg, name, value)
+    write_report(cfg, days, args.output)
+    return 0
+
+
+def write_report(cfg, days, output=None):
     now = utcnow()
     data = build_report_data(cfg, now, days, "memtier.py %s" % VERSION)
     with io.open(find_template(cfg), encoding="utf-8") as handle:
@@ -994,23 +1006,15 @@ def cmd_report(cfg, args):
         raise MemTierError("template does not contain the data placeholder %s" % DATA_PLACEHOLDER)
     html = template.replace(DATA_PLACEHOLDER, script_safe_json(data), 1)
 
-    local = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
-    dated = os.path.join(cfg.report_dir, "MemTier_Report_%s.html" % local)
-    target = os.path.abspath(args.output) if args.output else dated
+    target = os.path.abspath(output or os.path.join(cfg.report_dir, REPORT_NAME))
     ensure_dir(os.path.dirname(target))
-    with io.open(target + ".tmp", "w", encoding="utf-8", newline="\n") as handle:
+    # Write aside and swap in, so a reader never sees a half-written report
+    tmp = "%s.%d.tmp" % (target, os.getpid())
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(html)
-    os.replace(target + ".tmp", target)
+    os.replace(tmp, target)
     LOG.info("report written: %s (%d hosts, %d VMs, %d runs, %.1f MB)", target, len(data["hosts"]), len(data["vms"]),
              len(data["runs"]), len(html.encode("utf-8")) / 1048576.0)
-    if not args.output:
-        latest = os.path.join(cfg.report_dir, "MemTier_Report_latest.html")
-        shutil.copyfile(dated, latest)
-        if cfg.keep_reports > 0:
-            old = sorted(glob.glob(os.path.join(cfg.report_dir, "MemTier_Report_2*.html")))
-            for path in old[:-cfg.keep_reports]:
-                os.remove(path)
-    return 0
 
 
 # ----------------------------------------------------------------------------
@@ -1029,8 +1033,9 @@ def cmd_setup(args):
         print("Config %s already exists - testing it (use --force to recreate)." % path)
     else:
         print("Creating %s" % path)
-        default_server = socket.getfqdn()
-        servers = prompt("vCenter FQDN(s), comma separated", default_server)
+        servers = ""
+        while not servers:
+            servers = prompt("vCenter FQDN(s), comma separated")
         username = prompt("Read-only SSO user", "svc-memtier@vsphere.local")
         password = getpass.getpass("Password (stored in the config file, empty = use MEMTIER_PASSWORD): ")
         verify = prompt("Verify TLS certificates (true/false)", "true")
@@ -1064,12 +1069,11 @@ def cmd_setup(args):
     script = os.path.abspath(__file__)
     cron = ("# VMware memory tiering collector - installed by memtier.py setup\n"
             "SHELL=/bin/bash\n"
-            '5 * * * * root "%(py)s" "%(script)s" collect --config "%(cfg)s" --quiet\n'
-            '30 6 * * * root "%(py)s" "%(script)s" report --config "%(cfg)s" --quiet\n') % {"py": python, "script": script, "cfg": path}
-    print("\nCron entries (run hourly at :05, report daily at 06:30):\n\n" + cron)
+            '5 * * * * root "%(py)s" "%(script)s" collect --config "%(cfg)s" --quiet\n') % {"py": python, "script": script, "cfg": path}
+    print("\nCron entry (collect hourly at :05, the report is rebuilt after every run):\n\n" + cron)
     if args.install_cron:
         if not ok:
-            print("Not installing cron jobs because the connection test failed.")
+            print("Not installing the cron job because the connection test failed.")
             return 1
         target = "/etc/cron.d/memtier"
         with io.open(target, "w", encoding="utf-8") as handle:
@@ -1097,7 +1101,9 @@ def main(argv=None):
     common = argparse.ArgumentParser(add_help=False)
     common_options(common, True)  # also accepted after the command, e.g. "collect --config x.ini"
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("collect", parents=[common], help="collect the last window of real-time memory statistics")
+    col = sub.add_parser("collect", parents=[common],
+                         help="collect the last window of real-time memory statistics and rebuild the report")
+    col.add_argument("--no-report", action="store_true", help="collect only, do not rebuild the report")
     rep = sub.add_parser("report", parents=[common], help="build the HTML trend report")
     rep.add_argument("--days", type=int, help="days of history to include (default from config)")
     rep.add_argument("--output", help="write to this file instead of the report directory")
@@ -1111,7 +1117,7 @@ def main(argv=None):
     rep.add_argument("--title", help="report title")
     rep.add_argument("--support-contact", help="support contact shown in the header")
     rep.add_argument("--template", help="path to memtier-report.template.html")
-    st = sub.add_parser("setup", parents=[common], help="create the config, test the connection, print/install cron jobs")
+    st = sub.add_parser("setup", parents=[common], help="create the config, test the connection, print/install the cron job")
     st.add_argument("--force", action="store_true", help="overwrite an existing config")
     st.add_argument("--install-cron", action="store_true", help="write /etc/cron.d/memtier")
     args = parser.parse_args(argv)

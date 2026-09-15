@@ -13,7 +13,7 @@ logs/
 examples/mock-data/
 examples/mock-reports/
 VMware_Memory_Tiering_Snapshot_*
-MemTier_Report_*.html
+MemTier_Report*.html
 *.lock
 
 # OS / editor / tooling
