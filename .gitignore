@@ -1,0 +1,25 @@
+# Credentials and local configuration - never commit
+pw_*
+*.ini
+!examples/mock.ini
+vc-cred.xml
+*cred*.xml
+.env
+
+# Collected data, reports and logs
+data/
+reports/
+logs/
+examples/mock-data/
+examples/mock-reports/
+VMware_Memory_Tiering_Snapshot_*
+MemTier_Report_*.html
+*.lock
+
+# OS / editor / tooling
+.DS_Store
+__pycache__/
+*.pyc
+.claude/
+.vscode/
+.idea/

@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VMware Memory Snapshot</title>
+<!--
+  VMware NVMe Memory Tiering Snapshot (template)
+  Used by Get-MemTierSnapshot.ps1: one run, last hour of real-time statistics.
+  Same look as memtier-report.template.html. Self-contained: no CDN, works offline.
+-->
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f3f2ef;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --neutral: #c3c2b7;
+  --accent: #184f95;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #232322;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --neutral: #52514e;
+    --accent: #86b6ef;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: 24px clamp(16px, 3vw, 40px) 48px;
+}
+.wrap { max-width: 1600px; margin: 0 auto; }
+h1 { font-size: 24px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 16px; margin: 0 0 4px; }
+.sub { color: var(--ink-2); margin: 4px 0 0; }
+.hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 20px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; position: sticky; top: 0; z-index: 5; }
+.filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); }
+select, input[type=search] {
+  font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--axis);
+  border-radius: 6px; padding: 5px 8px; min-width: 0; max-width: 100%;
+}
+button.btn { font: inherit; border: 1px solid var(--axis); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button.btn:hover { background: var(--surface-2); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.kpi .l { font-size: 12px; color: var(--ink-2); }
+.kpi .v { font-size: 26px; font-weight: 650; margin-top: 2px; }
+.kpi .s { font-size: 12px; color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+.grid2 > .card { margin-bottom: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--ink-2); margin: 0 0 10px; }
+.legend i { display: inline-block; vertical-align: middle; margin-right: 6px; width: 12px; height: 12px; border-radius: 2px; }
+.legend i.line { width: 16px; height: 0; border-top: 2px dashed var(--ink-2); border-radius: 0; }
+.legend i.solid { width: 16px; height: 0; border-top: 2px solid var(--axis); border-radius: 0; }
+/* host chart: one row per host, three thin bars as % of the host's DRAM */
+.hchart { display: grid; grid-template-columns: minmax(120px, 220px) minmax(0, 1fr); column-gap: 12px; }
+.hchart .axis { grid-column: 2; position: relative; height: 18px; font-size: 10px; color: var(--muted); }
+.hchart .axis span { position: absolute; transform: translateX(-50%); }
+.hchart .lab { font-size: 12px; padding: 4px 0; min-width: 0; }
+.hchart .lab b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hchart .lab span { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hchart .plot { position: relative; padding: 5px 0; border-bottom: 1px solid var(--grid); cursor: default; outline: none; }
+.hchart .plot:hover, .hchart .plot:focus-visible { background: var(--surface-2); }
+.hchart .b { position: relative; height: 6px; margin: 0 0 2px; }
+.hchart .b i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 3px 3px 0; }
+.hchart .b i.over::after { content: ""; position: absolute; right: -6px; top: -1px; border: 4px solid transparent; border-left: 5px solid currentColor; }
+.hchart .g { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
+.hchart .g.dram { border-left: 2px solid var(--axis); }
+.hchart .g.thr { border-left: 2px dashed var(--ink-2); opacity: 0.8; }
+/* stacked distribution bars */
+.dist { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px 12px; align-items: center; font-size: 12px; color: var(--ink-2); }
+.stack { display: flex; height: 22px; gap: 2px; border-radius: 4px; overflow: hidden; }
+.stack i { display: block; min-width: 2px; outline: none; }
+.stack i:hover, .stack i:focus-visible { filter: brightness(1.1); box-shadow: inset 0 0 0 2px var(--ink); }
+.badge { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; color: var(--ink); }
+.badge::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--c, var(--neutral)); flex: none; }
+.badge.good { --c: var(--good); } .badge.warning { --c: var(--warning); }
+.badge.serious { --c: var(--serious); } .badge.critical { --c: var(--critical); }
+.badge.warning::before { border-radius: 1px; transform: rotate(45deg) scale(0.85); }
+.badge.serious::before, .badge.critical::before { border-radius: 1px; clip-path: polygon(50% 0, 100% 100%, 0 100%); width: 10px; }
+.badge.neutral::before { border-radius: 2px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--grid); text-align: left; white-space: nowrap; }
+th { font-size: 12px; color: var(--ink-2); font-weight: 600; cursor: pointer; user-select: none; background: var(--surface); }
+th[aria-sort=ascending]::after { content: " ▲"; font-size: 9px; }
+th[aria-sort=descending]::after { content: " ▼"; font-size: 9px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:hover { background: var(--surface-2); }
+.bar { display: inline-flex; align-items: center; gap: 8px; vertical-align: middle; }
+.bar .track { position: relative; width: 72px; height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.bar .track > i { position: absolute; inset: 0 auto 0 0; background: var(--series-1); border-radius: 0 4px 4px 0; }
+.bar .track > .thr { position: absolute; top: -2px; bottom: -2px; width: 0; border-left: 2px solid var(--ink); opacity: 0.55; }
+.bar b { font-weight: 600; min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
+.toolbar .grow { flex: 1; }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 10px; color: var(--ink-2); font-size: 12px; flex-wrap: wrap; }
+#tip {
+  position: fixed; pointer-events: none; z-index: 50; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); min-width: 170px; max-width: 320px;
+}
+#tip .tt { color: var(--ink-2); margin-bottom: 4px; }
+#tip .row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+#tip .row span { color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+#tip .row span i { width: 12px; height: 2px; display: inline-block; }
+#tip .row b { font-variant-numeric: tabular-nums; }
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 640px) {
+  .filters { position: static; }
+  .hchart { grid-template-columns: 1fr; }
+  .hchart .axis, .hchart .plot { grid-column: 1; }
+  .hchart .lab { padding-bottom: 0; }
+  .dist { grid-template-columns: 1fr; }
+}
+@media print { .filters, .toolbar, .pager { display: none; } body { background: #fff; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title">VMware Memory Snapshot</h1>
+      <p class="sub" id="subtitle"></p>
+    </div>
+  </header>
+
+  <div id="nodata" class="card empty" hidden>No data: no vCenter could be read. See the collection status below and the console output.</div>
+
+  <main id="main">
+    <div class="card filters" role="region" aria-label="Filters">
+      <label>vCenter<select id="fVc"></select></label>
+      <label>Cluster<select id="fCluster"></select></label>
+      <label>Cluster failover<select id="fFailover"></select></label>
+    </div>
+
+    <section class="kpis" id="kpis" aria-label="Key figures"></section>
+
+    <section class="card">
+      <h2>Host memory as % of DRAM</h2>
+      <p class="hint" id="hostHint"></p>
+      <div class="legend">
+        <span><i style="background:var(--series-1)"></i>Active (P95, last hour)</span>
+        <span><i style="background:var(--series-2)"></i>Consumed (avg)</span>
+        <span><i style="background:var(--series-3)"></i>Assigned to powered-on VMs</span>
+        <span><i class="line"></i><span id="lgThr">Tiering guidance</span></span>
+        <span><i class="solid"></i>100% DRAM</span>
+      </div>
+      <div class="hchart" id="hostChart"></div>
+    </section>
+
+    <div class="grid2">
+      <section class="card">
+        <h2>Cluster failover headroom</h2>
+        <p class="hint" id="clusterHint"></p>
+        <div class="tablewrap"><table id="clusterTable"></table></div>
+      </section>
+      <section class="card">
+        <h2>VM distribution</h2>
+        <p class="hint" id="distHint"></p>
+        <div class="legend" id="distLegend"></div>
+        <div class="dist" id="dist"></div>
+      </section>
+    </div>
+    <div style="height:16px"></div>
+
+    <section class="card">
+      <h2>Hosts</h2>
+      <p class="hint">Active, consumed, balloon and swap are host-level counters (including VMkernel) over the last hour. Verdict: active P95 vs. the tiering guidance.</p>
+      <div class="tablewrap"><table id="hostTable"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Virtual machines</h2>
+      <p class="hint" id="vmHint"></p>
+      <div class="toolbar">
+        <input type="search" id="vmSearch" placeholder="Search VM, host, cluster…" aria-label="Search VMs">
+        <select id="vmPower" aria-label="Power state filter"><option value="">All power states</option></select>
+        <select id="vmStatus" aria-label="Status filter"><option value="">All statuses</option></select>
+        <label class="hint" style="margin:0"><input type="checkbox" id="vmPressure"> Memory pressure only</label>
+        <span class="grow"></span>
+        <button class="btn" id="vmExport">Export CSV</button>
+      </div>
+      <div class="tablewrap"><table id="vmTable"></table></div>
+      <div class="pager" id="vmPager"></div>
+    </section>
+  </main>
+
+  <section class="card">
+    <h2>Collection status</h2>
+    <div class="tablewrap"><table id="runTable"></table></div>
+  </section>
+  <footer id="footer"></footer>
+</div>
+<div id="tip" hidden></div>
+
+<script>window.MEMTIER = /*__MEMTIER_DATA__*/null;</script>
+<script>
+(function () {
+  "use strict";
+  var D = window.MEMTIER;
+  var $ = function (id) { return document.getElementById(id); };
+  if (!D) { $("main").hidden = true; $("nodata").hidden = false; return; }
+  var M = D.meta;
+
+  // ---------- helpers ----------
+  var nf0 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+  var nf1 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  function gb(mb) { return mb == null ? "–" : nf0.format(mb / 1024); }
+  function gb1(mb) { return mb == null ? "–" : nf1.format(mb / 1024); }
+  function pct(v) { return v == null || isNaN(v) ? "–" : nf1.format(v) + "%"; }
+  function num(v) { return v == null ? "–" : nf0.format(v); }
+  function dt(iso) { return iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "–"; }
+  function el(tag, attrs, text) {
+    var e = document.createElement(tag);
+    if (attrs) for (var k in attrs) { if (k === "class") e.className = attrs[k]; else e.setAttribute(k, attrs[k]); }
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function uniq(arr) { return arr.filter(function (v, i, a) { return v != null && a.indexOf(v) === i; }).sort(); }
+  var tip = $("tip");
+  function showTip(x, y, title, rows) {
+    tip.textContent = "";
+    tip.appendChild(el("div", { class: "tt" }, title));
+    rows.forEach(function (r) {
+      var row = el("div", { class: "row" }), lab = el("span");
+      if (r[2]) { var key = el("i"); key.style.background = r[2]; lab.appendChild(key); }
+      lab.appendChild(document.createTextNode(r[0]));
+      row.appendChild(lab); row.appendChild(el("b", null, r[1])); tip.appendChild(row);
+    });
+    tip.hidden = false;
+    var w = tip.offsetWidth, h = tip.offsetHeight, left = x + 14, top = y + 14;
+    if (left + w > window.innerWidth - 8) left = x - w - 14;
+    if (top + h > window.innerHeight - 8) top = y - h - 14;
+    tip.style.left = Math.max(8, left) + "px"; tip.style.top = Math.max(8, top) + "px";
+  }
+  function hideTip() { tip.hidden = true; }
+  function hoverTip(node, title, rows) {
+    var show = function (e) {
+      var r = node.getBoundingClientRect();
+      showTip(e.clientX != null && e.type !== "focus" ? e.clientX : r.left + 20, e.clientY != null && e.type !== "focus" ? e.clientY : r.bottom, title, rows());
+    };
+    node.addEventListener("pointermove", show); node.addEventListener("focus", show);
+    node.addEventListener("pointerleave", hideTip); node.addEventListener("blur", hideTip);
+  }
+  var statusClass = { "Does not fit": "critical", "Tight": "warning", "Cold": "good", "Warm": "warning", "Hot": "serious", "Fits": "good", "Fits, peaks above": "warning", "Exceeds": "critical", "ok": "good", "partial": "warning", "failed": "critical" };
+  function badge(td, label) { td.appendChild(el("span", { class: "badge " + (statusClass[label] || "neutral") }, label)); }
+  function barCell(td, v, thr) {
+    var b = el("span", { class: "bar" }), track = el("span", { class: "track", "aria-hidden": "true" }), i = el("i");
+    i.style.width = Math.max(0, Math.min(100, v || 0)) + "%"; track.appendChild(i);
+    if (thr != null) { var t = el("span", { class: "thr" }); t.style.left = thr + "%"; track.appendChild(t); }
+    b.appendChild(el("b", null, pct(v))); b.appendChild(track); td.appendChild(b);
+  }
+  function sortRows(rows, s) {
+    return rows.sort(function (a, b) {
+      var x = a[s.key], y = b[s.key];
+      if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+      if (typeof x === "string") return x.localeCompare(y) * s.dir;
+      return (x - y) * s.dir;
+    });
+  }
+  function renderTable(table, cols, rows, sortState, onSort) {
+    table.textContent = "";
+    var thead = el("thead"), tr = el("tr");
+    cols.forEach(function (c) {
+      var th = el("th", { class: c.num ? "num" : "", scope: "col", tabindex: "0" }, c.label);
+      if (c.title) th.title = c.title;
+      if (sortState.key === c.key) th.setAttribute("aria-sort", sortState.dir > 0 ? "ascending" : "descending");
+      var act = function () { if (sortState.key === c.key) sortState.dir *= -1; else { sortState.key = c.key; sortState.dir = c.num ? -1 : 1; } onSort(); };
+      th.addEventListener("click", act);
+      th.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); } });
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr); table.appendChild(thead);
+    var tbody = el("tbody");
+    sortRows(rows, sortState).forEach(function (r) {
+      var row = el("tr");
+      cols.forEach(function (c) {
+        var td = el("td", { class: c.num ? "num" : "" });
+        if (c.render) c.render(td, r); else td.textContent = c.fmt ? c.fmt(r[c.key], r) : (r[c.key] == null || r[c.key] === "" ? "–" : r[c.key]);
+        row.appendChild(td);
+      });
+      tbody.appendChild(row);
+    });
+    if (!rows.length) { var e = el("tr"); e.appendChild(el("td", { colspan: cols.length, class: "empty" }, "No rows match the filter.")); tbody.appendChild(e); }
+    table.appendChild(tbody);
+  }
+
+  // ---------- header, filters ----------
+  document.title = M.title;
+  $("title").textContent = M.title;
+  $("subtitle").textContent = "vCenter: " + (M.vcenters.join(", ") || "–") + " • Last " + M.windowMinutes + " min of real-time statistics (" +
+    dt(M.windowStartUtc) + " – " + dt(M.generatedUtc) + ")" + (M.support ? " • Support: " + M.support : "");
+  $("lgThr").textContent = "Tiering guidance (" + M.thresholdPct + "% of DRAM)";
+  $("footer").textContent = "Built by " + M.builder + ". Active memory is the ESXi estimate of recently touched guest pages, sampled every 20 s. " +
+    "A single hour is a snapshot: schedule Invoke-MemTierCollector.ps1 for a long-term view.";
+
+  var state = { vc: "", cluster: "", hostSort: { key: "activeP95Pct", dir: -1 }, clusterSort: { key: "p95Pct", dir: -1 }, vmSort: { key: "activeP95Pct", dir: 1 }, runSort: { key: "vc", dir: 1 }, vmPage: 0 };
+  function fillSelect(sel, values, allLabel) {
+    var cur = sel.value; sel.textContent = "";
+    sel.appendChild(el("option", { value: "" }, allLabel));
+    values.forEach(function (v) { sel.appendChild(el("option", { value: v }, v)); });
+    sel.value = values.indexOf(cur) >= 0 ? cur : "";
+  }
+  fillSelect($("fVc"), uniq(D.hosts.map(function (h) { return h.vc; }).concat(D.vms.map(function (v) { return v.vc; }))), "All");
+  function refreshClusters() {
+    fillSelect($("fCluster"), uniq(D.hosts.filter(function (h) { return !state.vc || h.vc === state.vc; }).map(function (h) { return h.cluster; })), "All");
+    state.cluster = $("fCluster").value;
+  }
+  refreshClusters();
+  $("fVc").addEventListener("change", function () { state.vc = this.value; refreshClusters(); state.vmPage = 0; render(); });
+  $("fCluster").addEventListener("change", function () { state.cluster = this.value; state.vmPage = 0; render(); });
+  // cluster failover model: n1 = cluster minus largest host, stretched = one site (50%), config = stretched for named clusters
+  var FO = M.failover || { stretched: false, stretchedClusters: [] };
+  var foOptions = [["n1", "N+1 (one host down)"], ["stretched", "Stretched (one site down, 50%)"]];
+  if (!FO.stretched && FO.stretchedClusters.length) foOptions.unshift(["config", "As configured (" + FO.stretchedClusters.length + " stretched)"]);
+  foOptions.forEach(function (o) { $("fFailover").appendChild(el("option", { value: o[0] }, o[1])); });
+  state.failover = FO.stretched ? "stretched" : FO.stretchedClusters.length ? "config" : "n1";
+  $("fFailover").value = state.failover;
+  $("fFailover").addEventListener("change", function () { state.failover = this.value; render(); });
+  function isStretched(name) { return state.failover === "stretched" || (state.failover === "config" && FO.stretchedClusters.indexOf(name) >= 0); }
+  function failoverCapacity(stretched, total, largest, n) { return stretched ? total * 0.5 : n > 1 ? total - largest : total; }
+  function verdictOf(p, mx) { return p == null ? "No data" : p > M.thresholdPct ? "Exceeds" : mx != null && mx > M.thresholdPct ? "Fits, peaks above" : "Fits"; }
+  function capacityVerdict(p) { return p == null ? "No data" : p > 100 ? "Does not fit" : p > 90 ? "Tight" : "Fits"; }
+
+  function visible(x) { return (!state.vc || x.vc === state.vc) && (!state.cluster || x.cluster === state.cluster); }
+  fillSelect($("vmPower"), uniq(D.vms.map(function (v) { return v.powerState; })), "All power states");
+  fillSelect($("vmStatus"), ["Cold", "Warm", "Hot"].concat(uniq(D.vms.map(function (v) { return v.status; })).filter(function (s) { return ["Cold", "Warm", "Hot"].indexOf(s) < 0; })), "All statuses");
+
+  if (!D.hosts.length && !D.vms.length) { $("main").hidden = true; $("nodata").hidden = false; }
+
+  // ---------- render ----------
+  function render() {
+    hideTip();
+    var hosts = D.hosts.filter(visible), vms = D.vms.filter(visible);
+    renderKpis(hosts, vms);
+    renderHostChart(hosts);
+    renderClusters();
+    renderDist(vms);
+    renderHostTable(hosts);
+    renderVmTable();
+    renderRuns();
+  }
+
+  function renderKpis(hosts, vms) {
+    var k = $("kpis"); k.textContent = "";
+    function kpi(label, value, sub) {
+      var n = el("div", { class: "kpi" }); n.appendChild(el("div", { class: "l" }, label));
+      n.appendChild(el("div", { class: "v" }, value)); if (sub) n.appendChild(el("div", { class: "s" }, sub)); k.appendChild(n);
+    }
+    var on = vms.filter(function (v) { return v.powerState === "Powered On"; });
+    var assigned = 0, activeVm = 0, assignedWithStats = 0;
+    on.forEach(function (v) { assigned += v.assignedMB || 0; if (v.activeAvgMB != null) { activeVm += v.activeAvgMB; assignedWithStats += v.assignedMB || 0; } });
+    var dram = 0, nvme = 0, hostActive = 0, dramWithStats = 0, above = 0, tiered = 0;
+    hosts.forEach(function (h) {
+      dram += h.dramMB || 0; nvme += h.nvmeMB || 0; if (h.nvmeMB > 0) tiered++;
+      if (h.activeP95MB != null) { hostActive += h.activeP95MB; dramWithStats += h.dramMB || 0; }
+      if (h.verdict === "Exceeds") above++;
+    });
+    var count = function (s) { return vms.filter(function (v) { return v.status === s; }).length; };
+    var templates = 0; D.runs.forEach(function (r) { if (!state.vc || r.vc === state.vc) templates += r.templates || 0; });
+    kpi("Powered-on VMs", num(on.length), "of " + num(vms.length) + " VMs" + (state.cluster ? "" : " • " + num(templates) + " templates not counted"));
+    kpi("Assigned memory", gb(assigned) + " GB", "powered-on VMs • " + pct(dram ? assigned / dram * 100 : null) + " of DRAM");
+    kpi("DRAM", gb(dram) + " GB", nvme ? "+ " + gb(nvme) + " GB NVMe tier on " + tiered + " hosts" : "no NVMe tier enabled");
+    kpi("Host active memory (P95)", pct(dramWithStats ? hostActive / dramWithStats * 100 : null), "of DRAM, all selected hosts");
+    kpi("Active vs. assigned", pct(assignedWithStats ? activeVm / assignedWithStats * 100 : null), "weighted average over powered-on VMs");
+    kpi("Hosts above guidance", num(above) + " / " + num(hosts.length), "active P95 > " + M.thresholdPct + "% of DRAM");
+    kpi("Cold VMs", num(count("Cold")), "Warm " + num(count("Warm")) + " • Hot " + num(count("Hot")));
+    kpi("VMs with memory pressure", num(vms.filter(function (v) { return v.pressure; }).length), "ballooning or swapping in the last hour");
+  }
+
+  function renderHostChart(hosts) {
+    var c = $("hostChart"); c.textContent = "";
+    $("hostHint").textContent = "One row per host, sorted by active P95. Bars are relative to the host's own DRAM, so hosts of different sizes compare directly. Hover or focus a row for exact values.";
+    var rows = hosts.filter(function (h) { return h.dramMB; }).sort(function (a, b) { return (b.activeP95Pct == null ? -1 : b.activeP95Pct) - (a.activeP95Pct == null ? -1 : a.activeP95Pct); });
+    if (!rows.length) { c.appendChild(el("div", { class: "empty", style: "grid-column:1/-1" }, "No hosts match the filter.")); return; }
+    var maxPct = 100;
+    rows.forEach(function (h) { maxPct = Math.max(maxPct, h.assignedPctOfDram || 0, h.consumedAvgMB / h.dramMB * 100 || 0); });
+    maxPct = Math.min(300, Math.ceil(maxPct / 50) * 50);
+    var x = function (p) { return Math.max(0, Math.min(100, p / maxPct * 100)); };
+    var axis = el("div", { class: "axis", "aria-hidden": "true" });
+    for (var t = 0; t <= maxPct; t += (maxPct > 150 ? 50 : 25)) {
+      var s = el("span", null, t + "%"); s.style.left = x(t) + "%";
+      if (t === 0) s.style.transform = "none"; else if (t === maxPct) s.style.transform = "translateX(-100%)";
+      axis.appendChild(s);
+    }
+    c.appendChild(axis);
+    rows.forEach(function (h) {
+      var lab = el("div", { class: "lab" });
+      lab.appendChild(el("b", { title: h.name }, h.name));
+      lab.appendChild(el("span", null, h.cluster + " • " + gb(h.dramMB) + " GB DRAM" + (h.nvmeMB ? " + " + gb(h.nvmeMB) + " GB NVMe" : "")));
+      var plot = el("div", { class: "plot", tabindex: "0", role: "img",
+        "aria-label": h.name + ": active P95 " + pct(h.activeP95Pct) + ", consumed " + pct(h.consumedAvgMB / h.dramMB * 100) + ", assigned " + pct(h.assignedPctOfDram) + " of DRAM" });
+      [[h.activeP95Pct, "var(--series-1)"], [h.consumedAvgMB == null ? null : h.consumedAvgMB / h.dramMB * 100, "var(--series-2)"], [h.assignedPctOfDram, "var(--series-3)"]].forEach(function (b) {
+        var row = el("div", { class: "b" }), bar = el("i");
+        if (b[0] != null) {
+          bar.style.width = x(b[0]) + "%"; bar.style.background = b[1]; bar.style.color = b[1];
+          if (b[0] > maxPct) bar.className = "over";
+          row.appendChild(bar);
+        }
+        plot.appendChild(row);
+      });
+      var g1 = el("span", { class: "g dram" }); g1.style.left = x(100) + "%"; plot.appendChild(g1);
+      var g2 = el("span", { class: "g thr" }); g2.style.left = x(M.thresholdPct) + "%"; plot.appendChild(g2);
+      hoverTip(plot, h.name + " • " + h.verdict, function () {
+        return [["Active P95", pct(h.activeP95Pct) + " • " + gb(h.activeP95MB) + " GB", "var(--series-1)"],
+          ["Active max", pct(h.activeMaxPct)],
+          ["Consumed avg", pct(h.consumedAvgMB == null ? null : h.consumedAvgMB / h.dramMB * 100) + " • " + gb(h.consumedAvgMB) + " GB", "var(--series-2)"],
+          ["Assigned", pct(h.assignedPctOfDram) + " • " + gb(h.assignedMB) + " GB", "var(--series-3)"],
+          ["Powered-on VMs", num(h.vmsOn)], ["DRAM", gb(h.dramMB) + " GB"]];
+      });
+      c.appendChild(lab); c.appendChild(plot);
+    });
+  }
+
+  function renderClusters() {
+    var groups = {};
+    D.hosts.filter(visible).forEach(function (h) {
+      if (h.cluster === "(standalone)" || h.activeP95MB == null || !h.dramMB) return;
+      var k = h.vc + "|" + h.cluster;
+      (groups[k] = groups[k] || []).push(h);
+    });
+    var rows = Object.keys(groups).map(function (k) {
+      var m = groups[k], st = isStretched(m[0].cluster), dram = 0, big = 0, mem = 0, bigMem = 0, p = 0, mx = 0, cons = 0;
+      m.forEach(function (h) {
+        dram += h.dramMB; big = Math.max(big, h.dramMB); mem += h.dramMB + (h.nvmeMB || 0); bigMem = Math.max(bigMem, h.dramMB + (h.nvmeMB || 0));
+        p += h.activeP95MB; mx += h.activeMaxMB || 0; cons += h.consumedAvgMB || 0;
+      });
+      var cap = failoverCapacity(st, dram, big, m.length), capMem = failoverCapacity(st, mem, bigMem, m.length);
+      var p95Pct = p / cap * 100, maxPct = mx / cap * 100, consPct = cons / capMem * 100;
+      return { vc: m[0].vc, cluster: m[0].cluster, model: st ? "Stretched (50%)" : "N+1", hosts: m.length, dramMB: dram, capacityMB: cap,
+        p95Pct: p95Pct, maxPct: maxPct, verdict: verdictOf(p95Pct, maxPct), consPct: consPct, capacity: capacityVerdict(consPct) };
+    });
+    var anyStretched = rows.some(function (r) { return r.model !== "N+1"; });
+    $("clusterHint").textContent = (anyStretched ? "Stretched: after a site failure one site (50% of the cluster) carries everything. " : "") +
+      (rows.some(function (r) { return r.model === "N+1"; }) ? "N+1: the cluster without its largest host carries everything. " : "") +
+      "Tiering: active P95 vs. surviving DRAM. Capacity: consumed vs. surviving memory (DRAM + NVMe tier) must stay below 100%.";
+    renderTable($("clusterTable"), [
+      { key: "cluster", label: "Cluster" },
+      { key: "model", label: "Model" },
+      { key: "hosts", label: "Hosts", num: true, fmt: num },
+      { key: "capacityMB", label: "Surviving DRAM GB", num: true, fmt: gb, title: "N+1: without the largest host • stretched: one site (50%)" },
+      { key: "p95Pct", label: "Active P95", num: true, render: function (td, r) { barCell(td, r.p95Pct, M.thresholdPct); } },
+      { key: "verdict", label: "Tiering", render: function (td, r) { badge(td, r.verdict); } },
+      { key: "consPct", label: "Consumed", num: true, render: function (td, r) { barCell(td, r.consPct, null); } },
+      { key: "capacity", label: "Capacity", render: function (td, r) { badge(td, r.capacity); } }
+    ], rows, state.clusterSort, renderClusters);
+    var k = $("kpis"), prev = $("kpiFailover");
+    if (prev) prev.remove();
+    if (rows.length) {
+      var fit = rows.filter(function (r) { return r.consPct <= 100; }).length;
+      var n = el("div", { class: "kpi", id: "kpiFailover" });
+      n.appendChild(el("div", { class: "l" }, "Clusters surviving a failure"));
+      n.appendChild(el("div", { class: "v" }, num(fit) + " / " + num(rows.length)));
+      n.appendChild(el("div", { class: "s" }, (anyStretched ? "stretched: one site down" : "one host down") + " • consumed fits"));
+      k.appendChild(n);
+    }
+  }
+
+  function renderDist(vms) {
+    var groups = [["Cold", "var(--good)"], ["Warm", "var(--warning)"], ["Hot", "var(--serious)"], ["Other", "var(--neutral)"]];
+    var cnt = { Cold: 0, Warm: 0, Hot: 0, Other: 0 }, mem = { Cold: 0, Warm: 0, Hot: 0, Other: 0 }, totalC = 0, totalM = 0;
+    vms.forEach(function (v) { var g = cnt.hasOwnProperty(v.status) && v.status !== "Other" ? v.status : "Other"; cnt[g]++; mem[g] += v.assignedMB || 0; totalC++; totalM += v.assignedMB || 0; });
+    $("distHint").textContent = "Status by active P95 vs. assigned memory in the last hour: Cold < " + M.coldPct + "%, Hot ≥ " + M.hotPct +
+      "%. Other = powered off, suspended, excluded or no data. Per-VM status is a right-sizing hint; tiering is decided per host.";
+    var lg = $("distLegend"); lg.textContent = "";
+    groups.forEach(function (g) { lg.appendChild(el("span", { class: "badge " + (statusClass[g[0]] || "neutral") }, g[0] + " " + num(cnt[g[0]]))); });
+    var d = $("dist"); d.textContent = "";
+    [["VMs", cnt, totalC, num, ""], ["Assigned memory", mem, totalM, gb, " GB"]].forEach(function (spec) {
+      d.appendChild(el("div", null, spec[0]));
+      var stack = el("div", { class: "stack", role: "img", "aria-label": spec[0] + ": " + groups.map(function (g) { return g[0] + " " + spec[3](spec[1][g[0]]) + spec[4]; }).join(", ") });
+      groups.forEach(function (g) {
+        var v = spec[1][g[0]]; if (!v) return;
+        var seg = el("i", { tabindex: "0" }); seg.style.flex = String(v); seg.style.background = g[1];
+        hoverTip(seg, spec[0] + " • " + g[0], function () { return [[g[0], spec[3](v) + spec[4]], ["Share", pct(spec[2] ? v / spec[2] * 100 : null)]]; });
+        stack.appendChild(seg);
+      });
+      d.appendChild(stack);
+    });
+  }
+
+  function renderHostTable(hosts) {
+    renderTable($("hostTable"), [
+      { key: "cluster", label: "Cluster" }, { key: "name", label: "Host" },
+      { key: "connectionState", label: "State", fmt: function (v, r) { return v + (r.maintenanceMode ? " (maint.)" : ""); } },
+      { key: "tieringType", label: "Tiering" },
+      { key: "dramMB", label: "DRAM GB", num: true, fmt: gb }, { key: "nvmeMB", label: "NVMe GB", num: true, fmt: function (v) { return v ? gb(v) : "–"; } },
+      { key: "vmsOn", label: "VMs on", num: true, fmt: num },
+      { key: "assignedMB", label: "Assigned GB", num: true, fmt: gb },
+      { key: "assignedPctOfDram", label: "Assigned / DRAM", num: true, fmt: pct },
+      { key: "consumedAvgMB", label: "Consumed GB", num: true, fmt: gb },
+      { key: "activeAvgPct", label: "Active avg", num: true, fmt: pct },
+      { key: "activeP95Pct", label: "Active P95", num: true, render: function (td, r) { barCell(td, r.activeP95Pct, M.thresholdPct); } },
+      { key: "activeMaxPct", label: "Active max", num: true, fmt: pct },
+      { key: "balloonMaxMB", label: "Balloon MB", num: true, fmt: num }, { key: "swapUsedMaxMB", label: "Swap used MB", num: true, fmt: num },
+      { key: "verdict", label: "Verdict", render: function (td, r) { badge(td, r.verdict); } }
+    ], hosts, state.hostSort, render);
+  }
+
+  var PAGE = 100, lastRows = [];
+  function renderVmTable() {
+    var q = $("vmSearch").value.trim().toLowerCase(), pw = $("vmPower").value, st = $("vmStatus").value, pr = $("vmPressure").checked;
+    var rows = D.vms.filter(function (v) {
+      if (!visible(v)) return false;
+      if (pw && v.powerState !== pw) return false;
+      if (st && v.status !== st) return false;
+      if (pr && !v.pressure) return false;
+      if (q && (v.name + " " + v.host + " " + v.cluster).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+    lastRows = rows;
+    $("vmHint").textContent = "All VMs (templates excluded). Sorted by active P95 vs. assigned, lowest first: the top of the list is where memory is assigned but not used.";
+    sortRows(rows, state.vmSort);
+    var pages = Math.max(1, Math.ceil(rows.length / PAGE));
+    state.vmPage = Math.min(state.vmPage, pages - 1);
+    renderTable($("vmTable"), [
+      { key: "name", label: "VM" }, { key: "powerState", label: "State" }, { key: "cluster", label: "Cluster" }, { key: "host", label: "Host" },
+      { key: "assignedMB", label: "Assigned GB", num: true, fmt: gb1 },
+      { key: "consumedAvgMB", label: "Consumed GB", num: true, fmt: gb1 },
+      { key: "activeAvgMB", label: "Active avg GB", num: true, fmt: gb1 },
+      { key: "activeAvgPct", label: "Active avg", num: true, fmt: pct },
+      { key: "activeP95Pct", label: "Active P95", num: true, render: function (td, r) { barCell(td, r.activeP95Pct, null); } },
+      { key: "activeMaxPct", label: "Active max", num: true, fmt: pct },
+      { key: "balloonMaxMB", label: "Balloon MB", num: true, fmt: num }, { key: "swappedMaxMB", label: "Swapped MB", num: true, fmt: num },
+      { key: "reservationMB", label: "Reserved MB", num: true, fmt: num },
+      { key: "latencySensitivity", label: "Latency sens." },
+      { key: "status", label: "Status", render: function (td, r) {
+        badge(td, r.status);
+        if (r.pressure) { td.appendChild(document.createTextNode(" ")); badge(td, "Pressure"); td.lastChild.className = "badge critical"; }
+      } }
+    ], rows.slice(state.vmPage * PAGE, (state.vmPage + 1) * PAGE), state.vmSort, renderVmTable);
+    // renderTable sorted only the page slice; the full list was sorted above, so the slice is already in order
+    var pager = $("vmPager"); pager.textContent = "";
+    pager.appendChild(el("span", null, num(rows.length) + " VMs • page " + (state.vmPage + 1) + " of " + pages));
+    var prev = el("button", { class: "btn", type: "button" }, "‹ Prev"), next = el("button", { class: "btn", type: "button" }, "Next ›");
+    prev.disabled = state.vmPage === 0; next.disabled = state.vmPage >= pages - 1;
+    prev.addEventListener("click", function () { state.vmPage--; renderVmTable(); });
+    next.addEventListener("click", function () { state.vmPage++; renderVmTable(); });
+    pager.appendChild(prev); pager.appendChild(next);
+  }
+  ["vmSearch", "vmPower", "vmStatus", "vmPressure"].forEach(function (id) {
+    $(id).addEventListener(id === "vmSearch" ? "input" : "change", function () { state.vmPage = 0; renderVmTable(); });
+  });
+
+  $("vmExport").addEventListener("click", function () {
+    var decimalComma = nf1.format(1.5).indexOf(",") >= 0, sep = decimalComma ? ";" : ",";
+    var f = function (v) { return v == null ? "" : decimalComma ? String(v).replace(".", ",") : String(v); };
+    var q = function (s) { s = s == null ? "" : String(s); return /[",;\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    var cols = ["vc", "cluster", "host", "name", "powerState", "assignedMB", "reservationMB", "latencySensitivity", "samples", "activeAvgMB", "activeP95MB", "activeMaxMB",
+      "consumedAvgMB", "balloonMaxMB", "swappedMaxMB", "activeAvgPct", "activeP95Pct", "activeMaxPct", "status", "pressure"];
+    var lines = [cols.join(sep)];
+    lastRows.forEach(function (r) {
+      lines.push(cols.map(function (c) { var v = r[c]; return typeof v === "number" ? f(v) : typeof v === "boolean" ? (v ? "yes" : "no") : q(v); }).join(sep));
+    });
+    var blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    var a = el("a", { href: URL.createObjectURL(blob), download: "memtier-snapshot-vms.csv" });
+    document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  });
+
+  function renderRuns() {
+    renderTable($("runTable"), [
+      { key: "vc", label: "vCenter" }, { key: "status", label: "Status", render: function (td, r) { badge(td, r.status); } },
+      { key: "hosts", label: "Hosts", num: true, fmt: num }, { key: "hostsConnected", label: "Connected", num: true, fmt: num },
+      { key: "vmsTotal", label: "VMs", num: true, fmt: num }, { key: "vmsOn", label: "Powered on", num: true, fmt: num },
+      { key: "templates", label: "Templates", num: true, fmt: num }, { key: "excluded", label: "Excluded", num: true, fmt: num },
+      { key: "durationSec", label: "Duration s", num: true, fmt: num }, { key: "message", label: "Message" }
+    ], D.runs.slice(), state.runSort, renderRuns);
+  }
+
+  var lastW = window.innerWidth, timer;
+  window.addEventListener("resize", function () { if (Math.abs(window.innerWidth - lastW) < 40) return; lastW = window.innerWidth; clearTimeout(timer); timer = setTimeout(render, 200); });
+  if ($("main").hidden) renderRuns(); else render();
+})();
+</script>
+</body>
+</html>
