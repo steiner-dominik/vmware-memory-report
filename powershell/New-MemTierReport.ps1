@@ -29,6 +29,7 @@ param (
     [ValidateRange(1, 800)][int]$Days = 30,
     [double]$ThresholdPct = 50,
     [switch]$StretchedCluster,
+    [Alias('StretchedClusters')]
     [string[]]$StretchedClusterName = @(),
     [double]$ColdPct = 40,
     [double]$HotPct = 75,
@@ -106,6 +107,7 @@ try {
             $iTs = $ix.Timestamp; $iVc = $ix.VCenter; $iHostId = $ix.HostId; $iName = $ix.VMHost; $iCluster = $ix.Cluster
             $iTier = $ix.TieringType; $iPhys = $ix.PhysicalMB; $iDram = $ix.DramMB; $iNvme = $ix.NvmeTierMB; $iSamples = $ix.Samples
             $iAvg = $ix.ActiveAvgMB; $iP95 = $ix.ActiveP95MB; $iMax = $ix.ActiveMaxMB; $iCons = $ix.ConsumedAvgMB; $iVms = $ix.VMsOn
+            $iConsMax = $ix.ConsumedMaxMB
             $iAssigned = $ix.AssignedMB; $iBalloon = $ix.BalloonMaxMB; $iSwap = $ix.SwapUsedMaxMB
             while (-not $p.EndOfData) {
                 $f = $p.ReadFields()
@@ -134,13 +136,15 @@ try {
                 $b = [long]([math]::Floor($ts / $bucket) * $bucket)
                 $acc = $h.buckets[$b]
                 if ($null -eq $acc) {
-                    $acc = @{ w = 0L; avg = 0.0; cons = 0.0; consW = 0L; vms = 0L; assigned = 0L; p95 = 0L; max = 0L; balloon = 0L; swap = 0L; dram = 0L; dramTs = [long]::MinValue }
+                    $acc = @{ w = 0L; avg = 0.0; cons = 0.0; consW = 0L; consMax = 0L; consMaxN = 0L; vms = 0L; assigned = 0L; p95 = 0L; max = 0L; balloon = 0L; swap = 0L; dram = 0L; dramTs = [long]::MinValue }
                     $h.buckets[$b] = $acc
                 }
                 $acc.w += $samples
                 $acc.avg += [double]$avg * $samples
                 $x = 0L
                 if ([long]::TryParse($f[$iCons], [ref]$x)) { $acc.cons += [double]$x * $samples; $acc.consW += $samples }
+                $x = 0L
+                if ([long]::TryParse($f[$iConsMax], [ref]$x)) { if ($x -gt $acc.consMax) { $acc.consMax = $x }; $acc.consMaxN++ }
                 $x = 0L; [void][long]::TryParse($f[$iVms], [ref]$x); if ($x -gt $acc.vms) { $acc.vms = $x }
                 $x = 0L; [void][long]::TryParse($f[$iAssigned], [ref]$x); if ($x -gt $acc.assigned) { $acc.assigned = $x }
                 $x = 0L; [void][long]::TryParse($f[$iP95], [ref]$x); if ($x -gt $acc.p95) { $acc.p95 = $x }
@@ -166,6 +170,7 @@ try {
             $iTs = $ix.Timestamp; $iVc = $ix.VCenter; $iId = $ix.VMId; $iName = $ix.VM; $iCluster = $ix.Cluster; $iHost = $ix.VMHost
             $iAssigned = $ix.AssignedMB; $iRes = $ix.ReservationMB; $iLat = $ix.LatencySensitivity; $iSamples = $ix.Samples
             $iAvg = $ix.ActiveAvgMB; $iP95 = $ix.ActiveP95MB; $iMax = $ix.ActiveMaxMB; $iBalloon = $ix.BalloonMaxMB; $iSwap = $ix.SwappedMaxMB
+            $iCons = $ix.ConsumedAvgMB; $iConsMax = $ix.ConsumedMaxMB
             while (-not $p.EndOfData) {
                 $f = $p.ReadFields()
                 if ($null -eq $f -or $f.Count -lt $cols) { continue }
@@ -189,7 +194,8 @@ try {
                 if ($samples -lt 1) { $samples = 1L }
                 $d = $v.days[$di]
                 if ($null -eq $d) {
-                    $d = @{ hours = 0L; num = 0.0; den = 0.0; p95 = (New-Object 'System.Collections.Generic.List[double]'); max = 0.0; balloon = 0L; swap = 0L }
+                    $d = @{ hours = 0L; num = 0.0; den = 0.0; p95 = (New-Object 'System.Collections.Generic.List[double]'); max = 0.0; balloon = 0L; swap = 0L
+                        cnum = 0.0; cden = 0.0; cmax = $null }
                     $v.days[$di] = $d
                 }
                 $d.hours++
@@ -199,6 +205,10 @@ try {
                 $x = 0L; [void][long]::TryParse($f[$iMax], [ref]$x); $pct = [double]$x * 100.0 / $assigned; if ($pct -gt $d.max) { $d.max = $pct }
                 $x = 0L; [void][long]::TryParse($f[$iBalloon], [ref]$x); if ($x -gt $d.balloon) { $d.balloon = $x }
                 $x = 0L; [void][long]::TryParse($f[$iSwap], [ref]$x); if ($x -gt $d.swap) { $d.swap = $x }
+                $x = 0L
+                if ([long]::TryParse($f[$iCons], [ref]$x)) { $d.cnum += [double]$x * $samples; $d.cden += [double]$assigned * $samples }
+                $x = 0L
+                if ([long]::TryParse($f[$iConsMax], [ref]$x)) { $cpct = [double]$x * 100.0 / $assigned; if ($null -eq $d.cmax -or $cpct -gt $d.cmax) { $d.cmax = $cpct } }
             }
         }
         finally { Close-MemTierCsv $csv }
@@ -242,8 +252,9 @@ try {
         $points = foreach ($b in $bk) {
             $a = $h.buckets[$b]
             $consAvg = if ($a.consW) { Get-RoundHalfUp ($a.cons / $a.consW) } else { $null }
+            $consMax = if ($a.consMaxN) { $a.consMax } else { $null }
             '[' + ((& $N $b), (& $N $a.vms), (& $N $a.assigned), (& $N (Get-RoundHalfUp ($a.avg / $a.w))), (& $N $a.p95), (& $N $a.max),
-                (& $N $consAvg), (& $N $a.balloon), (& $N $a.swap), (& $N $a.dram) -join ',') + ']'
+                (& $N $consAvg), (& $N $a.balloon), (& $N $a.swap), (& $N $a.dram), (& $N $consMax) -join ',') + ']'
         }
         $hostJson.Add(('{{"key":{0},"vc":{1},"name":{2},"cluster":{3},"tiering":{4},"dramMB":{5},"nvmeMB":{6},"physMB":{7},"s":[{8}]}}' -f
                 (& $J $h.key), (& $J $h.vc), (& $J $h.name), (& $J $h.cluster), (& $J $h.tiering),
@@ -261,8 +272,10 @@ try {
         for ($i = 0; $i -lt $nDays; $i++) {
             $d = $v.days[$i]
             if ($null -eq $d) { $daily.Add('null'); continue }
+            $cAvg = if ($d.cden) { Get-Round1 ($d.cnum * 100.0 / $d.cden) } else { $null }
+            $cMax = if ($null -ne $d.cmax) { Get-Round1 $d.cmax } else { $null }
             $daily.Add('[' + ((& $N $d.hours), (& $N (Get-Round1 ($d.num * 100.0 / $d.den))), (& $N (Get-Round1 (Get-MemTierP95 $d.p95))),
-                    (& $N (Get-Round1 $d.max)), (& $N $d.balloon), (& $N $d.swap) -join ',') + ']')
+                    (& $N (Get-Round1 $d.max)), (& $N $d.balloon), (& $N $d.swap), (& $N $cAvg), (& $N $cMax) -join ',') + ']')
         }
         $vmJson.Add(('{{"id":{0},"vc":{1},"name":{2},"cluster":{3},"host":{4},"assignedMB":{5},"reservationMB":{6},"latency":{7},"lastTs":{8},"day0":{9},"d":[{10}]}}' -f
                 (& $J $key), (& $J $v.vc), (& $J $v.name), (& $J $v.cluster), (& $J $v.host), (& $N $v.assignedMB),
@@ -274,7 +287,8 @@ try {
         [void]$vcSet.Add($r['VCenter'])
         $runJson.Add('[' + ((& $N $r['_ts']), (& $J $r['VCenter']), (& $J ([string]$r['Status'])), (& $N (ConvertTo-MemTierInt $r['Hosts'])),
                 (& $N (ConvertTo-MemTierInt $r['HostsConnected'])), (& $N (ConvertTo-MemTierInt $r['VMsTotal'])), (& $N (ConvertTo-MemTierInt $r['VMsOn'])),
-                (& $N (ConvertTo-MemTierInt $r['Templates'])), (& $N (ConvertTo-MemTierInt $r['DurationSec'])) -join ',') + ']')
+                (& $N (ConvertTo-MemTierInt $r['Templates'])), (& $N (ConvertTo-MemTierInt $r['DurationSec'])),
+                (& $J ([string]$r['Message'])) -join ',') + ']')
     }
 
     $meta = '{{"title":{0},"support":{1},"generatedUtc":{2},"fromUtc":{3},"toUtc":{4},"days":{5},"thresholdPct":{6},"coldPct":{7},"hotPct":{8},"bucketHours":{9},"vcenters":[{10}],"builder":{11},"failover":{{"stretched":{12},"stretchedClusters":[{13}]}}}}' -f
@@ -283,7 +297,7 @@ try {
         ((@($vcSet) | ForEach-Object { & $J $_ }) -join ','), (& $J "New-MemTierReport.ps1 $($script:MemTierVersion) (PowerShell $($PSVersionTable.PSVersion))"),
         $(if ($StretchedCluster) { 'true' } else { 'false' }), ((@($StretchedClusterName) | ForEach-Object { & $J $_ }) -join ',')
 
-    [void]$sb.Append('{"schema":1,"meta":').Append($meta)
+    [void]$sb.Append('{"schema":2,"meta":').Append($meta)
     [void]$sb.Append(',"runs":[').Append(($runJson -join ',')).Append(']')
     [void]$sb.Append(',"hosts":[').Append(($hostJson -join ',')).Append(']')
     [void]$sb.Append(',"vms":[').Append(($vmJson -join ',')).Append(']}')
@@ -297,6 +311,8 @@ try {
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     $dated = Join-Path $ReportDir ('MemTier_Report_{0}.html' -f (Get-Date).ToString('yyyy-MM-dd_HHmm', $script:Inv))
     $target = if ($OutputPath) { [System.IO.Path]::GetFullPath($OutputPath) } else { [System.IO.Path]::GetFullPath($dated) }
+    $targetDir = [System.IO.Path]::GetDirectoryName($target)
+    if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
     [System.IO.File]::WriteAllText($target, $html, $utf8)
     if (-not $OutputPath) {
         Copy-Item -LiteralPath $target -Destination (Join-Path $ReportDir 'MemTier_Report_latest.html') -Force

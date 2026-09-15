@@ -54,9 +54,18 @@ function Start-MemTierTranscript {
 # ---------------------------------------------------------------------------
 function ConvertTo-MemTierIso([datetime]$Utc) { $Utc.ToString($script:IsoFormat, $script:Inv) }
 
+# [string[]] matters: without the cast PowerShell binds the single-format ParseExact overload
+# and flattens the array into one unusable format string.
+$script:IsoFormats = [string[]]@(
+    "yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'",
+    "yyyy-MM-dd'T'HH:mm:sszzz", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFzzz",
+    "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF"
+)
 function ConvertFrom-MemTierIso([string]$Text) {
+    # The collectors write plain "...Z", but a CSV touched by another tool may carry milliseconds
+    # or a numeric offset. Rejecting those silently dropped every such row from the report.
     $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
-    [datetime]::ParseExact($Text.Trim(), $script:IsoFormat, $script:Inv, $styles)
+    [datetime]::ParseExact($Text.Trim(), $script:IsoFormats, $script:Inv, $styles)
 }
 
 $script:EpochBase = New-Object DateTime 1970, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)

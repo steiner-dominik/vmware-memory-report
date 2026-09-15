@@ -160,7 +160,17 @@ def round_half_up(value):
 
 
 def round1(value):
-    return math.floor(value * 10 + 0.5) / 10
+    scaled = math.floor(value * 10 + 0.5)
+    # PowerShell's "R" format prints an integral double without the ".0"; match it so both
+    # builders emit byte-identical JSON.
+    return scaled // 10 if scaled % 10 == 0 else scaled / 10.0
+
+
+def json_num(value):
+    """Integral floats serialise as integers, as the PowerShell builder does."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 def p95(values):
@@ -209,7 +219,11 @@ def as_int(text):
     try:
         return int(text)
     except ValueError:
-        return int(round(float(text)))
+        pass
+    try:
+        return int(math.floor(float(text) + 0.5))
+    except ValueError:
+        return None
 
 
 # ----------------------------------------------------------------------------
@@ -517,7 +531,7 @@ class ViJsonClient(object):
             raise MemTierError("performance counters not found on %s: %s" % (self.server, ", ".join(missing)))
         return dict((n, lookup[n]) for n in names)
 
-    def query_perf(self, entity_type, entity_ids, counter_map, start):
+    def query_perf(self, entity_type, counter_map, start):
         """Returns {entity_id: {counter_name: [values]}}; splits batches that fault and skips entities that fail alone."""
         perf = self.content["perfManager"]["value"]
         by_id = dict((v, k) for k, v in counter_map.items())
@@ -553,7 +567,7 @@ class ViJsonClient(object):
 
 
 def perf_batches(client, entity_type, ids, counter_map, start, batch_size):
-    results, failed, run = client.query_perf(entity_type, ids, counter_map, start)
+    results, failed, run = client.query_perf(entity_type, counter_map, start)
     for i in range(0, len(ids), batch_size):
         run(ids[i:i + batch_size])
     return results, failed
@@ -700,7 +714,9 @@ def collect_vcenter(cfg, server, now):
             if hm:
                 hm["vms_on"] += 1
                 hm["assigned"] += assigned
-            vm_meta[mid] = {"name": name, "host": hm["name"] if hm else "(unknown)", "cluster": hm["cluster"] if hm else "(unknown)",
+            # "(unknown)": the VM names a host that is not in the inventory; "(none)": no host at all
+            missing = "(unknown)" if host_id else "(none)"
+            vm_meta[mid] = {"name": name, "host": hm["name"] if hm else missing, "cluster": hm["cluster"] if hm else missing,
                             "assigned": assigned, "reservation": p.get("config.memoryAllocation.reservation"),
                             "latency": p.get("config.latencySensitivity.level") or ""}
 
@@ -837,8 +853,8 @@ def build_report_data(cfg, now, days, builder):
         b = r["_ts"] // bucket * bucket
         acc = h["buckets"].get(b)
         if acc is None:
-            acc = h["buckets"][b] = {"w": 0, "avg": 0.0, "cons": 0.0, "cons_w": 0, "vms": 0, "assigned": 0,
-                                     "p95": 0, "max": 0, "balloon": 0, "swap": 0, "dram": 0}
+            acc = h["buckets"][b] = {"w": 0, "avg": 0.0, "cons": 0.0, "cons_w": 0, "cons_max": 0, "cons_max_n": 0,
+                                     "vms": 0, "assigned": 0, "p95": 0, "max": 0, "balloon": 0, "swap": 0, "dram": 0}
             h["order"].append(b)
         acc["w"] += samples
         acc["avg"] += avg * samples
@@ -846,6 +862,10 @@ def build_report_data(cfg, now, days, builder):
         if cons is not None:
             acc["cons"] += cons * samples
             acc["cons_w"] += samples
+        cons_max = as_int(r.get("ConsumedMaxMB"))
+        if cons_max is not None:
+            acc["cons_max"] = max(acc["cons_max"], cons_max)
+            acc["cons_max_n"] += 1
         acc["vms"] = max(acc["vms"], as_int(r.get("VMsOn")) or 0)
         acc["assigned"] = max(acc["assigned"], as_int(r.get("AssignedMB")) or 0)
         acc["p95"] = max(acc["p95"], as_int(r.get("ActiveP95MB")) or 0)
@@ -862,7 +882,8 @@ def build_report_data(cfg, now, days, builder):
             a = h["buckets"][b]
             series.append([b, a["vms"], a["assigned"], round_half_up(a["avg"] / a["w"]), a["p95"], a["max"],
                            round_half_up(a["cons"] / a["cons_w"]) if a["cons_w"] else None,
-                           a["balloon"], a["swap"], a["dram"]])
+                           a["balloon"], a["swap"], a["dram"],
+                           a["cons_max"] if a["cons_max_n"] else None])
         host_list.append({"key": key, "vc": h["vc"], "name": h["name"], "cluster": h["cluster"], "tiering": h["tiering"],
                           "dramMB": h["dramMB"], "nvmeMB": h["nvmeMB"], "physMB": h["physMB"], "s": series})
 
@@ -888,7 +909,8 @@ def build_report_data(cfg, now, days, builder):
         samples = max(1, as_int(r.get("Samples")) or 1)
         d = v["days"].get(di)
         if d is None:
-            d = v["days"][di] = {"hours": 0, "num": 0.0, "den": 0.0, "p95": [], "max": 0.0, "balloon": 0, "swap": 0}
+            d = v["days"][di] = {"hours": 0, "num": 0.0, "den": 0.0, "p95": [], "max": 0.0, "balloon": 0, "swap": 0,
+                                 "cnum": 0.0, "cden": 0.0, "cmax": None}
         d["hours"] += 1
         d["num"] += avg * samples
         d["den"] += assigned * samples
@@ -896,6 +918,14 @@ def build_report_data(cfg, now, days, builder):
         d["max"] = max(d["max"], (as_int(r.get("ActiveMaxMB")) or 0) * 100.0 / assigned)
         d["balloon"] = max(d["balloon"], as_int(r.get("BalloonMaxMB")) or 0)
         d["swap"] = max(d["swap"], as_int(r.get("SwappedMaxMB")) or 0)
+        cons = as_int(r.get("ConsumedAvgMB"))
+        if cons is not None:
+            d["cnum"] += cons * samples
+            d["cden"] += assigned * samples
+        cons_max = as_int(r.get("ConsumedMaxMB"))
+        if cons_max is not None:
+            pct_max = cons_max * 100.0 / assigned
+            d["cmax"] = pct_max if d["cmax"] is None else max(d["cmax"], pct_max)
 
     vm_list = []
     for key in sorted(vms, key=lambda k: (vms[k]["vc"], vms[k]["name"].lower(), k)):
@@ -903,7 +933,9 @@ def build_report_data(cfg, now, days, builder):
         daily = [None] * ndays
         for di, d in v["days"].items():
             daily[di] = [d["hours"], round1(d["num"] * 100.0 / d["den"]), round1(p95(d["p95"])), round1(d["max"]),
-                         d["balloon"], d["swap"]]
+                         d["balloon"], d["swap"],
+                         round1(d["cnum"] * 100.0 / d["cden"]) if d["cden"] else None,
+                         round1(d["cmax"]) if d["cmax"] is not None else None]
         vm_list.append({"id": key, "vc": v["vc"], "name": v["name"], "cluster": v["cluster"], "host": v["host"],
                         "assignedMB": v["assignedMB"], "reservationMB": v["reservationMB"], "latency": v["latency"],
                         "lastTs": v["lastTs"], "day0": day0, "d": daily})
@@ -912,14 +944,15 @@ def build_report_data(cfg, now, days, builder):
     runs = []
     for r in load_rows(cfg.data_dir, "run", cutoff):
         runs.append([r["_ts"], r["VCenter"], r.get("Status") or "", as_int(r.get("Hosts")), as_int(r.get("HostsConnected")),
-                     as_int(r.get("VMsTotal")), as_int(r.get("VMsOn")), as_int(r.get("Templates")), as_int(r.get("DurationSec"))])
+                     as_int(r.get("VMsTotal")), as_int(r.get("VMsOn")), as_int(r.get("Templates")), as_int(r.get("DurationSec")),
+                     r.get("Message") or ""])
 
     vcenters = sorted(set([h["vc"] for h in host_list] + [v["vc"] for v in vm_list] + [r[1] for r in runs]))
     return {
-        "schema": 1,
+        "schema": 2,
         "meta": {"title": cfg.title, "support": cfg.support_contact, "generatedUtc": iso(now), "fromUtc": iso(cutoff),
-                 "toUtc": iso(now), "days": days, "thresholdPct": cfg.threshold_pct, "coldPct": cfg.cold_pct,
-                 "hotPct": cfg.hot_pct, "bucketHours": bucket_hours, "vcenters": vcenters, "builder": builder,
+                 "toUtc": iso(now), "days": days, "thresholdPct": json_num(cfg.threshold_pct), "coldPct": json_num(cfg.cold_pct),
+                 "hotPct": json_num(cfg.hot_pct), "bucketHours": bucket_hours, "vcenters": vcenters, "builder": builder,
                  "failover": {"stretched": cfg.stretched_cluster, "stretchedClusters": cfg.stretched_clusters}},
         "runs": runs, "hosts": host_list, "vms": vm_list,
     }
@@ -949,6 +982,10 @@ def cmd_report(cfg, args):
         cfg.stretched_cluster = True
     if args.stretched_clusters:
         cfg.stretched_clusters = [c.strip() for c in args.stretched_clusters.split(",") if c.strip()]
+    for name in ("threshold_pct", "cold_pct", "hot_pct", "title", "support_contact", "template"):
+        value = getattr(args, name, None)
+        if value is not None:
+            setattr(cfg, name, value)
     now = utcnow()
     data = build_report_data(cfg, now, days, "memtier.py %s" % VERSION)
     with io.open(find_template(cfg), encoding="utf-8") as handle:
@@ -1027,8 +1064,8 @@ def cmd_setup(args):
     script = os.path.abspath(__file__)
     cron = ("# VMware memory tiering collector - installed by memtier.py setup\n"
             "SHELL=/bin/bash\n"
-            "5 * * * * root %(py)s %(script)s collect --config %(cfg)s --quiet\n"
-            "30 6 * * * root %(py)s %(script)s report --config %(cfg)s --quiet\n") % {"py": python, "script": script, "cfg": path}
+            '5 * * * * root "%(py)s" "%(script)s" collect --config "%(cfg)s" --quiet\n'
+            '30 6 * * * root "%(py)s" "%(script)s" report --config "%(cfg)s" --quiet\n') % {"py": python, "script": script, "cfg": path}
     print("\nCron entries (run hourly at :05, report daily at 06:30):\n\n" + cron)
     if args.install_cron:
         if not ok:
@@ -1066,7 +1103,14 @@ def main(argv=None):
     rep.add_argument("--output", help="write to this file instead of the report directory")
     rep.add_argument("--stretched-cluster", action="store_true",
                      help="all clusters are stretched: capacity after a failure is one site (50%%) instead of N+1")
-    rep.add_argument("--stretched-clusters", metavar="NAMES", help="comma-separated names of the stretched clusters")
+    rep.add_argument("--stretched-clusters", "--stretched-cluster-name", metavar="NAMES", dest="stretched_clusters",
+                     help="comma-separated names of the stretched clusters")
+    rep.add_argument("--threshold-pct", type=float, help="tiering guidance, %% of DRAM (default from config)")
+    rep.add_argument("--cold-pct", type=float, help="per-VM cold threshold, %% of configured memory (default from config)")
+    rep.add_argument("--hot-pct", type=float, help="per-VM hot threshold, %% of configured memory (default from config)")
+    rep.add_argument("--title", help="report title")
+    rep.add_argument("--support-contact", help="support contact shown in the header")
+    rep.add_argument("--template", help="path to memtier-report.template.html")
     st = sub.add_parser("setup", parents=[common], help="create the config, test the connection, print/install cron jobs")
     st.add_argument("--force", action="store_true", help="overwrite an existing config")
     st.add_argument("--install-cron", action="store_true", help="write /etc/cron.d/memtier")
