@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Tiering Report</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23184f95'/%3E%3Crect x='12' y='14' width='40' height='14' rx='3' fill='%2386b6ef'/%3E%3Crect x='12' y='36' width='40' height='14' rx='3' fill='%23fab219'/%3E%3C/svg%3E">
+<!--
+  Status page of the container edition. Served by container/memtier_app.py; all URLs are
+  relative so the page works behind Home Assistant ingress (/api/hassio_ingress/<token>/).
+  Self-contained: no CDN, no external fonts. Palette shared with the report template.
+-->
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ef; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10);
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b; --accent: #184f95; --accent-ink: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232322; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --accent: #86b6ef; --accent-ink: #0b0b0b;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px clamp(16px, 3vw, 32px); border-bottom: 1px solid var(--border); background: var(--surface); }
+header h1 { font-size: 16px; margin: 0; letter-spacing: -0.01em; }
+nav { display: flex; gap: 2px; flex-wrap: wrap; }
+nav button { font: inherit; border: 0; background: none; color: var(--ink-2); padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+nav button[aria-selected=true] { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+.spacer { flex: 1; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--good); } .dot.partial, .dot.collecting, .dot.waiting { background: var(--warning); }
+.dot.failed, .dot.unconfigured { background: var(--critical); }
+.btn { font: inherit; border: 1px solid var(--axis); background: var(--surface); color: var(--ink); padding: 5px 12px; border-radius: 6px; cursor: pointer; text-decoration: none; display: inline-block; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--axis); border-radius: 6px; padding: 4px 6px; }
+main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+section { display: none; }
+section.active { display: block; }
+#tab-report.active { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+#report-frame { flex: 1; width: 100%; border: 0; min-height: 70vh; background: var(--page); }
+.pad { padding: 20px clamp(16px, 3vw, 32px) 40px; max-width: 1200px; width: 100%; margin: 0 auto; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.card h2 { font-size: 15px; margin: 0 0 10px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .k { font-size: 12px; color: var(--ink-2); }
+.tile .v { font-size: 22px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.tile .v.small { font-size: 15px; padding-top: 6px; }
+.tile .s { font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.notice { border-left: 4px solid var(--warning); }
+.notice.error { border-left-color: var(--critical); }
+.muted { color: var(--muted); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { font-size: 12px; color: var(--ink-2); font-weight: 600; white-space: nowrap; }
+td.num, th.num { text-align: right; }
+.status-ok { color: var(--good); } .status-partial { color: #b17d05; } .status-failed { color: var(--critical); }
+@media (prefers-color-scheme: dark) { .status-partial { color: var(--warning); } }
+pre.log { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.empty { text-align: center; color: var(--ink-2); padding: 48px 16px; }
+code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+dl.kv dt { color: var(--ink-2); } dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 16px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Memory Tiering Report</h1>
+  <nav role="tablist" id="tabs">
+    <button role="tab" data-tab="report" data-i18n="tabReport">Report</button>
+    <button role="tab" data-tab="status" data-i18n="tabStatus">Status</button>
+    <button role="tab" data-tab="runs" data-i18n="tabRuns">Runs</button>
+    <button role="tab" data-tab="data" data-i18n="tabData">Data</button>
+    <button role="tab" data-tab="settings" data-i18n="tabSettings">Settings</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="pill"><span class="dot" id="dot"></span><span id="status-text">…</span></span>
+  <button class="btn primary" id="collect" type="button" data-i18n="collectNow">Collect now</button>
+  <select id="lang" aria-label="Language"><option value="en">EN</option><option value="de">DE</option></select>
+</header>
+<main>
+  <section id="tab-report">
+    <div class="empty" id="report-empty" hidden></div>
+    <iframe id="report-frame" title="Report" hidden></iframe>
+  </section>
+
+  <section id="tab-status"><div class="pad">
+    <div id="notices"></div>
+    <div class="grid" id="tiles"></div>
+    <div class="card"><h2 data-i18n="vcenters">vCenters in the last collection</h2><div class="table-wrap" id="vcenters"></div></div>
+    <div class="card"><h2 data-i18n="log">Log</h2><pre class="log" id="log"></pre></div>
+  </div></section>
+
+  <section id="tab-runs"><div class="pad">
+    <div class="card"><h2 data-i18n="runsTitle">Collector runs</h2><p class="muted" data-i18n="runsHint">Newest first. Gaps and failed runs show where the report has no data.</p><div class="table-wrap" id="runs"></div></div>
+  </div></section>
+
+  <section id="tab-data"><div class="pad">
+    <div class="card"><h2 data-i18n="dataTitle">Collected data</h2><p class="muted" data-i18n="dataHint">Monthly CSV files, the same format as the PowerShell and Python scripts. Completed months are compressed.</p>
+      <p><a class="btn" href="report?download=1" id="download-report" data-i18n="downloadReport">Download report (HTML)</a></p>
+      <div class="table-wrap" id="files"></div></div>
+  </div></section>
+
+  <section id="tab-settings"><div class="pad">
+    <div class="card"><h2 data-i18n="settingsTitle">Running configuration</h2><p class="muted" id="settings-hint"></p><dl class="kv" id="settings"></dl></div>
+  </div></section>
+</main>
+<footer id="footer"></footer>
+
+<script>
+(function () {
+  "use strict";
+  var I18N = {
+    en: {
+      tabReport: "Report", tabStatus: "Status", tabRuns: "Runs", tabData: "Data", tabSettings: "Settings",
+      collectNow: "Collect now", collecting: "Collecting…",
+      st_ok: "OK", st_partial: "Partial", st_failed: "Failed", st_collecting: "Collecting", st_waiting: "Waiting for first run", st_unconfigured: "Not configured",
+      vcenters: "vCenters in the last collection", log: "Log", runsTitle: "Collector runs",
+      runsHint: "Newest first. Gaps and failed runs show where the report has no data.",
+      dataTitle: "Collected data", dataHint: "Monthly CSV files, the same format as the PowerShell and Python scripts. Completed months are compressed.",
+      downloadReport: "Download report (HTML)", settingsTitle: "Running configuration",
+      settingsHA: "Change these on the app's Configuration tab in Home Assistant. The app restarts and rebuilds the report.",
+      settingsEnv: "Set by MEMTIER_* environment variables. Restart the container after changing them.",
+      noReport: "No report yet. It is built after the first collection, which starts as soon as the vCenter connection is configured.",
+      noReportUnconfigured: "Configure the vCenter connection first (Settings tab explains where).",
+      lastCollection: "Last collection", nextRun: "Next run", hosts: "Hosts", vms: "VMs powered on", peak: "Busiest host (P95 active)",
+      reportUpdated: "Report updated", of: "of", guidance: "guidance", never: "never", now: "now",
+      vcenter: "vCenter", status: "Status", duration: "Duration", message: "Message", time: "Time", file: "File", size: "Size", modified: "Modified",
+      noRuns: "No runs yet.", noFiles: "No data files yet.",
+      missing: "Not collecting yet. Missing: ", configErrors: "Configuration problems:",
+      whereHA: "Set them on the app's Configuration tab.", whereEnv: "Set the MEMTIER_* environment variables.",
+      tooSoon: "The previous run was less than 5 minutes ago.", alreadyRunning: "A collection is already running.",
+      yes: "yes", no: "no", entities: "Home Assistant entities", source: "Configuration source"
+    },
+    de: {
+      tabReport: "Bericht", tabStatus: "Status", tabRuns: "Läufe", tabData: "Daten", tabSettings: "Einstellungen",
+      collectNow: "Jetzt sammeln", collecting: "Sammle…",
+      st_ok: "OK", st_partial: "Teilweise", st_failed: "Fehlgeschlagen", st_collecting: "Sammelt", st_waiting: "Warte auf ersten Lauf", st_unconfigured: "Nicht konfiguriert",
+      vcenters: "vCenter der letzten Sammlung", log: "Protokoll", runsTitle: "Sammelläufe",
+      runsHint: "Neueste zuerst. Lücken und fehlgeschlagene Läufe zeigen, wo der Bericht keine Daten hat.",
+      dataTitle: "Gesammelte Daten", dataHint: "Monatliche CSV-Dateien im selben Format wie die PowerShell- und Python-Skripte. Abgeschlossene Monate werden komprimiert.",
+      downloadReport: "Bericht herunterladen (HTML)", settingsTitle: "Aktive Konfiguration",
+      settingsHA: "Änderungen im Reiter Konfiguration der App in Home Assistant. Die App startet neu und baut den Bericht neu.",
+      settingsEnv: "Gesetzt über MEMTIER_*-Umgebungsvariablen. Nach Änderungen den Container neu starten.",
+      noReport: "Noch kein Bericht. Er entsteht nach der ersten Sammlung, die startet, sobald die vCenter-Verbindung konfiguriert ist.",
+      noReportUnconfigured: "Zuerst die vCenter-Verbindung konfigurieren (der Reiter Einstellungen zeigt, wo).",
+      lastCollection: "Letzte Sammlung", nextRun: "Nächster Lauf", hosts: "Hosts", vms: "Eingeschaltete VMs", peak: "Auslastungsstärkster Host (P95 aktiv)",
+      reportUpdated: "Bericht aktualisiert", of: "von", guidance: "Richtwert", never: "nie", now: "jetzt",
+      vcenter: "vCenter", status: "Status", duration: "Dauer", message: "Meldung", time: "Zeit", file: "Datei", size: "Größe", modified: "Geändert",
+      noRuns: "Noch keine Läufe.", noFiles: "Noch keine Datendateien.",
+      missing: "Es wird noch nicht gesammelt. Es fehlt: ", configErrors: "Probleme in der Konfiguration:",
+      whereHA: "Im Reiter Konfiguration der App setzen.", whereEnv: "Die MEMTIER_*-Umgebungsvariablen setzen.",
+      tooSoon: "Der letzte Lauf ist weniger als 5 Minuten her.", alreadyRunning: "Es läuft bereits eine Sammlung.",
+      yes: "ja", no: "nein", entities: "Home-Assistant-Entitäten", source: "Konfigurationsquelle"
+    }
+  };
+  var state = { tab: null, status: null, version: null, lang: null, reportStamp: null, runsLoaded: 0 };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function store(key, value) { try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch (e) { return null; } }
+  function t(key) { return (I18N[state.lang] || I18N.en)[key] || I18N.en[key] || key; }
+  function el(tag, attrs, text) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+  function fmtTime(isoText) {
+    if (!isoText) return t("never");
+    var d = new Date(isoText);
+    return d.toLocaleString(state.lang === "de" ? "de-AT" : undefined, { dateStyle: "medium", timeStyle: "short" });
+  }
+  function fmtSize(n) { return n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB"; }
+  function fmtDuration(s) { return s == null ? "" : s < 60 ? s + " s" : Math.floor(s / 60) + " min " + (s % 60) + " s"; }
+
+  function table(columns, rows, emptyText) {
+    if (!rows.length) return el("p", { "class": "muted" }, emptyText);
+    var tbl = el("table"), head = el("tr");
+    columns.forEach(function (c) { head.appendChild(el("th", c.num ? { "class": "num" } : {}, t(c.label))); });
+    tbl.appendChild(el("thead")).appendChild(head);
+    var body = tbl.appendChild(el("tbody"));
+    rows.forEach(function (r) {
+      var tr = body.appendChild(el("tr"));
+      columns.forEach(function (c) {
+        var td = tr.appendChild(el("td", c.num ? { "class": "num" } : {}));
+        var v = c.value(r);
+        if (v instanceof Node) td.appendChild(v); else td.textContent = v == null ? "" : String(v);
+      });
+    });
+    return tbl;
+  }
+  function statusCell(s) { return el("span", { "class": "status-" + (s || "failed") }, t("st_" + (s || "failed"))); }
+
+  function applyLanguage() {
+    document.documentElement.lang = state.lang;
+    $("lang").value = state.lang;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (n) { n.textContent = t(n.getAttribute("data-i18n")); });
+    if (state.status) render(state.status);
+  }
+
+  function selectTab(name) {
+    state.tab = name;
+    store("memtier.tab", name);
+    Array.prototype.forEach.call(document.querySelectorAll("nav button"), function (b) {
+      b.setAttribute("aria-selected", String(b.getAttribute("data-tab") === name));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("main section"), function (s) {
+      s.classList.toggle("active", s.id === "tab-" + name);
+    });
+    if (name === "runs") loadRuns();
+    if (name === "data") loadFiles();
+  }
+
+  function render(s) {
+    $("title").textContent = s.config.title || "Memory Tiering Report";
+    document.title = s.config.title || "Memory Tiering Report";
+    $("dot").className = "dot " + s.status;
+    $("status-text").textContent = t("st_" + s.status);
+    var btn = $("collect");
+    btn.disabled = !s.configured || s.running;
+    btn.textContent = s.running ? t("collecting") : t("collectNow");
+
+    // report tab: reload the frame only when the report file changed
+    var stamp = s.report ? s.report.updated : null;
+    $("report-empty").hidden = !!stamp;
+    $("report-frame").hidden = !stamp;
+    $("report-empty").textContent = s.configured ? t("noReport") : t("noReportUnconfigured");
+    $("download-report").hidden = !stamp;
+    if (stamp && stamp !== state.reportStamp) {
+      state.reportStamp = stamp;
+      $("report-frame").src = "report?t=" + encodeURIComponent(stamp);
+    }
+
+    // notices
+    var notices = $("notices");
+    notices.textContent = "";
+    var where = s.source === "home-assistant" ? t("whereHA") : t("whereEnv");
+    if (s.errors.length) {
+      var c = notices.appendChild(el("div", { "class": "card notice error" }));
+      c.appendChild(el("strong", {}, t("configErrors")));
+      var ul = c.appendChild(el("ul"));
+      s.errors.forEach(function (e) { ul.appendChild(el("li", {}, e)); });
+      c.appendChild(el("p", { "class": "muted" }, where));
+    } else if (s.missing.length) {
+      var m = notices.appendChild(el("div", { "class": "card notice" }));
+      m.appendChild(document.createTextNode(t("missing")));
+      s.missing.forEach(function (name, i) { if (i) m.appendChild(document.createTextNode(", ")); m.appendChild(el("code", {}, name)); });
+      m.appendChild(el("p", { "class": "muted" }, where));
+    }
+
+    // tiles
+    var L = s.latest || {}, tiles = $("tiles");
+    tiles.textContent = "";
+    function tile(k, v, sub, small) {
+      var d = tiles.appendChild(el("div", { "class": "tile" }));
+      d.appendChild(el("div", { "class": "k" }, k));
+      d.appendChild(el("div", { "class": small ? "v small" : "v" }, v));
+      if (sub) d.appendChild(el("div", { "class": "s" }, sub));
+    }
+    tile(t("lastCollection"), L.timestamp ? t("st_" + L.status) : "–", L.timestamp ? fmtTime(L.timestamp) : t("never"));
+    tile(t("nextRun"), s.running ? t("collecting") : (s.nextRun ? fmtTime(s.nextRun) : "–"), "", true);
+    tile(t("hosts"), L.timestamp ? L.hostsConnected : "–", L.timestamp ? t("of") + " " + L.hosts : "");
+    tile(t("vms"), L.timestamp ? L.vmsOn : "–", L.timestamp ? t("of") + " " + L.vmsTotal : "");
+    tile(t("peak"), L.peak ? L.peak.pct + " %" : "–", L.peak ? L.peak.host + " · " + t("guidance") + " " + L.thresholdPct + " %" : "");
+    tile(t("reportUpdated"), s.report ? fmtTime(s.report.updated) : "–", s.report ? fmtSize(s.report.size) : "", true);
+
+    $("vcenters").textContent = "";
+    $("vcenters").appendChild(table([
+      { label: "vcenter", value: function (r) { return r.vcenter; } },
+      { label: "status", value: function (r) { return statusCell(r.status); } },
+      { label: "hosts", num: true, value: function (r) { return r.hostsConnected + " / " + r.hosts; } },
+      { label: "vms", num: true, value: function (r) { return r.vmsOn; } },
+      { label: "duration", num: true, value: function (r) { return fmtDuration(r.durationSec); } },
+      { label: "message", value: function (r) { return r.message; } }
+    ], L.vcenters || [], t("noRuns")));
+
+    var log = $("log"), atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+    log.textContent = s.log.join("\n");
+    if (atBottom) log.scrollTop = log.scrollHeight;
+
+    // settings
+    $("settings-hint").textContent = s.source === "home-assistant" ? t("settingsHA") : t("settingsEnv");
+    var dl = $("settings");
+    dl.textContent = "";
+    var cfg = s.config;
+    Object.keys(cfg).forEach(function (k) {
+      var v = cfg[k];
+      if (typeof v === "boolean") v = v ? t("yes") : t("no");
+      else if (Array.isArray(v)) v = v.join(", ");
+      dl.appendChild(el("dt", {}, k));
+      dl.appendChild(el("dd", {}, v === "" ? "–" : v));
+    });
+    dl.appendChild(el("dt", {}, t("entities")));
+    dl.appendChild(el("dd", {}, s.entities ? t("yes") : t("no")));
+
+    $("footer").textContent = "vmware-memory-report " + s.version + " · collector " + s.collectorVersion;
+    if (state.tab === "runs" && s.lastFinished !== state.runsLoaded) loadRuns();
+  }
+
+  function api(path, options) {
+    return fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {})).then(function (r) {
+      return r.json().then(function (body) { return { status: r.status, body: body }; });
+    });
+  }
+
+  var timer = null;
+  function refresh() {
+    clearTimeout(timer);
+    api("api/status").then(function (res) {
+      var s = res.body;
+      // A panel left open across an app update keeps running old code: reload once when the version changes.
+      if (state.version && s.version !== state.version) { location.reload(); return; }
+      state.version = s.version;
+      if (!state.lang) { state.lang = store("memtier.lang") || s.language || "en"; applyLanguage(); }
+      state.status = s;
+      render(s);
+      if (!state.tab) selectTab(store("memtier.tab") || (s.report ? "report" : "status"));
+      timer = setTimeout(refresh, s.running ? 3000 : 30000);
+    }).catch(function () {
+      $("dot").className = "dot failed";
+      timer = setTimeout(refresh, 10000);
+    });
+  }
+
+  function loadRuns() {
+    state.runsLoaded = state.status ? state.status.lastFinished : 0;
+    api("api/runs").then(function (res) {
+      $("runs").textContent = "";
+      $("runs").appendChild(table([
+        { label: "time", value: function (r) { return fmtTime(r.timestamp); } },
+        { label: "vcenter", value: function (r) { return r.vcenter; } },
+        { label: "status", value: function (r) { return statusCell(r.status); } },
+        { label: "hosts", num: true, value: function (r) { return r.hostsConnected == null ? "" : r.hostsConnected + " / " + r.hosts; } },
+        { label: "vms", num: true, value: function (r) { return r.vmsOn; } },
+        { label: "duration", num: true, value: function (r) { return fmtDuration(r.durationSec); } },
+        { label: "message", value: function (r) { return r.message; } }
+      ], res.body.runs, t("noRuns")));
+    });
+  }
+
+  function loadFiles() {
+    api("api/files").then(function (res) {
+      $("files").textContent = "";
+      $("files").appendChild(table([
+        { label: "file", value: function (f) { return el("a", { href: "files/" + encodeURIComponent(f.name) }, f.name); } },
+        { label: "size", num: true, value: function (f) { return fmtSize(f.size); } },
+        { label: "modified", value: function (f) { return fmtTime(f.modified); } }
+      ], res.body.files, t("noFiles")));
+    });
+  }
+
+  $("tabs").addEventListener("click", function (e) {
+    var name = e.target.getAttribute && e.target.getAttribute("data-tab");
+    if (name) selectTab(name);
+  });
+  $("lang").addEventListener("change", function () { state.lang = this.value; store("memtier.lang", state.lang); applyLanguage(); });
+  $("collect").addEventListener("click", function () {
+    var btn = this;
+    btn.disabled = true;
+    api("api/collect", { method: "POST", headers: { "X-MemTier": "1" } }).then(function (res) {
+      if (res.status === 409) {
+        var reason = res.body.reason;
+        alert(reason === "too_soon" ? t("tooSoon") : reason === "running" ? t("alreadyRunning") : t("st_unconfigured"));
+      }
+      if (res.body.status) { state.status = res.body.status; render(res.body.status); }
+      refresh();
+    }).catch(function () { btn.disabled = false; });
+  });
+
+  state.lang = null;
+  refresh();
+})();
+</script>
+</body>
+</html>

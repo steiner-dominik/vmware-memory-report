@@ -1,0 +1,30 @@
+# Standalone deployment (no Home Assistant):
+#   cp env.example .env   # fill in vCenter and a UI password
+#   docker compose up -d
+# Then open http://<docker-host>:8080. The first collection starts right away,
+# after that every hour; the report is rebuilt after every run.
+services:
+  memtier:
+    image: ghcr.io/steiner-dominik/vmware-memory-report:latest
+    container_name: memtier
+    restart: unless-stopped
+    # Not root. The image's /data belongs to this user, so a fresh named volume does too.
+    user: "1000:1000"
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      # CSV history (data/), the report (reports/) and the scheduler state
+      - memtier-data:/data
+      # Optional: vCenter root CA for TLS verification, set MEMTIER_CA_FILE=/certs/vcenter-ca.pem
+      # - ./certs:/certs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  memtier-data:

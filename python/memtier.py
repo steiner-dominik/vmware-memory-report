@@ -239,12 +239,22 @@ class Config(object):
         parser = configparser.ConfigParser(interpolation=None)
         with io.open(self.path, encoding="utf-8") as handle:
             parser.read_file(handle)
-        self.p = parser
         mode = os.stat(self.path).st_mode
         if (os.name == "posix" and mode & (stat.S_IRWXG | stat.S_IRWXO)
                 and parser.get("vcenter", "password", fallback="").strip()):
             LOG.warning("config file %s contains a password and is readable by other users - run: chmod 600 %s", self.path, self.path)
-        base = os.path.dirname(self.path)
+        self._load(parser, os.path.dirname(self.path))
+
+    @classmethod
+    def from_parser(cls, parser, base):
+        """Build a config without a file, e.g. from container options; relative paths resolve against base."""
+        cfg = cls.__new__(cls)
+        cfg.path = None
+        cfg._load(parser, os.path.abspath(base))
+        return cfg
+
+    def _load(self, parser, base):
+        self.p = parser
 
         def path_opt(section, key, default):
             value = parser.get(section, key, fallback="").strip() or default

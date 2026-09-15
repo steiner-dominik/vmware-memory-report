@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Compile
+        run: python -m py_compile python/memtier.py container/memtier_app.py examples/generate-mock-data.py
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build the mock report with the standalone script
+        # The scripts stay usable on their own; the container must not become a requirement.
+        run: |
+          set -eu
+          python examples/generate-mock-data.py examples/mock-data
+          python python/memtier.py report --config examples/mock.ini --output /tmp/mock-report.html
+          test -s /tmp/mock-report.html
+          if grep -q '/\*__MEMTIER_DATA__\*/null' /tmp/mock-report.html; then
+            echo "::error::The data placeholder was not replaced."
+            exit 1
+          fi
+
+  image:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Build only; publishing happens in release.yml.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: vmware-memory-report:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+            REVISION=${{ github.sha }}
+
+      - name: Smoke test the image
+        run: |
+          set -eu
+          docker run --rm vmware-memory-report:ci version | grep -q "ci-${{ github.sha }}"
+          # The bundled collector stays reachable for standalone users without Python.
+          docker run --rm vmware-memory-report:ci cli --help | grep -q collect
+
+      - name: Smoke test the Home Assistant app options path
+        run: |
+          set -eu
+          # The Supervisor configures an app through this file, not the environment, and
+          # writes it as root with mode 0600 without changing the container's user. Guarded
+          # here: the image dropping privileges so it cannot read its own options, and
+          # ingress-only access. A named volume keeps the ownership a bind mount would lose.
+          docker volume create ha-data
+          docker run --rm -v ha-data:/data alpine:3.22 sh -c '
+            cat > /data/options.json <<JSON
+          {
+            "servers": ["vcenter.invalid"],
+            "username": "ro@vsphere.local",
+            "password": "Sm0ke-Pa55word",
+            "verify_tls": true,
+            "report_days": 30,
+            "log_level": "debug"
+          }
+          JSON
+            chown 0:0 /data/options.json && chmod 600 /data/options.json'
+
+          docker network create smoke
+          docker run -d --name ha --network smoke -v ha-data:/data vmware-memory-report:ci
+          sleep 6
+          docker logs ha 2>&1 | tee /tmp/ha-out
+
+          if grep -q 'permission denied' /tmp/ha-out; then
+            echo "::error::The image cannot read its own app configuration. Home Assistant apps run as root; do not set USER in the Dockerfile."
+            exit 1
+          fi
+          grep -q 'configuration from Home Assistant options' /tmp/ha-out
+          grep -q 'collecting from vcenter.invalid as ro@vsphere.local' /tmp/ha-out
+          grep -q 'vcenter.invalid: collection failed' /tmp/ha-out
+          if grep -q 'Sm0ke-Pa55word' /tmp/ha-out; then
+            echo "::error::The password appears in the log."
+            exit 1
+          fi
+
+          docker exec ha python3 /opt/memtier/container/memtier_app.py healthcheck
+          docker exec ha wget -q -O /tmp/status http://127.0.0.1:8080/api/status
+          docker exec ha grep -q '"source": "home-assistant"' /tmp/status
+
+          # Anything but the ingress proxy is refused; the watchdog endpoint stays open.
+          code=$(docker run --rm --network smoke curlimages/curl:8.16.0 -s -o /dev/null -w '%{http_code}' http://ha:8080/api/status)
+          test "$code" = 403
+          code=$(docker run --rm --network smoke curlimages/curl:8.16.0 -s -o /dev/null -w '%{http_code}' http://ha:8080/healthz)
+          test "$code" = 200
+          docker rm -f ha
+
+      - name: Smoke test the standalone deployment as in compose.yaml
+        run: |
+          set -eu
+          # Outside Home Assistant there is no options file; compose pins a normal user and a
+          # read-only root filesystem. Mock data proves the report is built from a fresh volume.
+          python3 examples/generate-mock-data.py /tmp/mock --days 3 >/dev/null
+          # The image populates the fresh volume first, as compose does, so /data belongs to 1000.
+          docker run --rm --entrypoint true -v sa-data:/data vmware-memory-report:ci
+          docker run --rm -v sa-data:/data -v /tmp/mock:/src:ro alpine:3.22 sh -c \
+            'mkdir -p /data/data && cp /src/* /data/data/ && chown -R 1000:1000 /data/data'
+
+          docker run -d --name sa --user 1000:1000 --read-only --tmpfs /tmp \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            -e MEMTIER_UI_PASSWORD=pw -p 18080:8080 -v sa-data:/data vmware-memory-report:ci
+          for i in $(seq 1 30); do
+            docker logs sa 2>&1 | grep -q 'report written' && break
+            sleep 1
+          done
+          docker logs sa 2>&1 | tee /tmp/sa-out
+
+          grep -q 'web interface listening on port 8080 (basic auth)' /tmp/sa-out
+          grep -q 'not collecting yet: set servers, username, password' /tmp/sa-out
+          grep -q 'report written' /tmp/sa-out
+          if grep -q 'not writable' /tmp/sa-out; then
+            echo "::error::The container user cannot write to a fresh /data volume."
+            exit 1
+          fi
+
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/status)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' -u admin:pw http://127.0.0.1:18080/report)" = 200
+          curl -sf -u admin:pw http://127.0.0.1:18080/api/status | grep -q '"hosts": 19'
+          docker rm -f sa

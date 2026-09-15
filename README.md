@@ -37,6 +37,7 @@ A single look at vCenter won't tell you. Active memory swings with backups, batc
 * 🏢 **Stretched cluster aware:** site failover (50% capacity) next to classic N+1.
 * 🔒 **Read-only:** a read-only vCenter account is all it needs. Nothing is changed in vCenter.
 * 🧰 **Two editions, same result:** PowerShell (PowerCLI) or Python (no extra packages). Both write the same CSV files and build the same report.
+* 🏠 **Easy install for the homelab:** a Home Assistant app or a Docker container runs the Python edition hourly and serves the report, no cron or scheduled task needed.
 * ⚡ **Quick snapshot:** want a first impression right now? The snapshot script looks at the last hour, no scheduling needed.
 
 ## ✅ Supported environments
@@ -54,6 +55,7 @@ Not tested yet: Windows PowerShell 5.1, the Windows scheduled task installer, an
 ## 🖥️ Where should it run?
 
 * ✅ **Recommended:** a Windows jump host, a management server or a small Linux VM that can reach vCenter on port 443.
+* 🏠 **Homelab:** your Home Assistant install or any Docker host that can reach vCenter, see [Home Assistant app and Docker](#-home-assistant-app-and-docker).
 * ⛔ **Not recommended:** the vCenter Server Appliance itself. It would technically work (Python 3 is on the appliance), but custom scripts and cron jobs on the appliance are not supported by Broadcom, and the data is gone after the next major upgrade.
 
 ## ⏱️ Try it in one minute (no vCenter needed)
@@ -103,6 +105,32 @@ Stretched clusters? Add `-StretchedCluster` (all clusters) or `-StretchedCluster
    📄 `/opt/memtier/reports/MemTier_Report.html` (updated every hour)
 
 All settings (stretched clusters, thresholds, retention, TLS) live in `memtier.ini`. For TLS verification, set `ca_file` to the vCenter root certificate ("Download trusted root CA certificates" on the vCenter start page).
+
+## 🏠 Home Assistant app and Docker
+
+The container runs the Python edition every hour, rebuilds the report after every run and serves it together with a small status page (last collection per vCenter, run history, CSV downloads). Collection and report are identical to the scripts, and the CSV files in the data volume can be read by either edition.
+
+**Home Assistant**
+
+[![Open app repo on your Home Assistant instance](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fsteiner-dominik%2Fhome-assistant-apps)
+
+1. Add `https://github.com/steiner-dominik/home-assistant-apps` under **Settings → Apps → App Store → ⋮ → Repositories**.
+2. Install **VMware Memory Tiering Report**, enter the vCenter FQDN, a read-only user and its password on the **Configuration** tab and start it.
+3. Open **Memory Tiering** in the sidebar. The app also creates `sensor.memtier_status`, `sensor.memtier_last_collection` and a few more entities.
+
+**Docker**
+
+```bash
+curl -LO https://github.com/steiner-dominik/vmware-memory-report/releases/latest/download/compose.yaml
+curl -L -o .env https://github.com/steiner-dominik/vmware-memory-report/releases/latest/download/env.example
+docker compose up -d
+```
+
+Edit `.env` before starting it: `MEMTIER_SERVERS`, `MEMTIER_USERNAME`, `MEMTIER_PASSWORD` and, if the port is reachable from your network, `MEMTIER_UI_PASSWORD`. Then open `http://<docker-host>:8080`. Every option of `memtier.ini` has a `MEMTIER_*` variable, listed in `env.example`.
+
+The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmware-memory-report cli --help`.
+
+📦 The scripts are attached to every [release](https://github.com/steiner-dominik/vmware-memory-report/releases) as a zip, so you never need the container to use them.
 
 ## ⚡ Quick snapshot (last hour only)
 
