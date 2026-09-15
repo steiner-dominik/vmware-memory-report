@@ -2,8 +2,12 @@
 
 Analyzes long-term active vs. consumed memory of VMware hosts, clusters and VMs to help plan **NVMe memory tiering** (vSphere 8.0 U3 / VCF 9) and its DRAM:NVMe ratio.
 
-It answers one question over weeks instead of one snapshot: **does the active memory of each host, and of each cluster after a failure, fit into DRAM?**
-Broadcom's guidance for memory tiering with the default 1:1 DRAM:NVMe ratio is to keep active memory at or below **50% of DRAM**.
+It answers two questions over weeks instead of one snapshot:
+
+* **Which clusters are worth tiering?** The **Memory tiering candidates** section at the top of the report ranks every cluster by the gap between *active*, *consumed* and *configured* memory. Configured memory is what the VMs were given, consumed is what the hosts actually back with memory, active is what has to stay in DRAM. The distance between active and consumed is memory that is resident but cold — exactly what an NVMe tier absorbs. The bigger that gap, the better the candidate.
+* **Does it fit?** Does the active memory of each host, and of each cluster after a failure, fit into DRAM? Broadcom's guidance for memory tiering with the default 1:1 DRAM:NVMe ratio is to keep active memory at or below **50% of DRAM**.
+
+Memory sizes switch between **GB and TB** (*Auto* picks TB from 2 TB of cluster DRAM upwards).
 
 ![Trend report (mock data)](docs/images/trend-report.png)
 
@@ -87,7 +91,7 @@ The model assumes two symmetric sites; the witness host is not counted.
 It writes `VMware_Memory_Tiering_Snapshot_<date>.html`, `..._VMs.csv` and `..._Hosts.csv`, and prints a host and cluster summary to the console.
 
 * **Last hour, not one sample:** values are avg / P95 / max over the last 60 minutes of 20-second samples (`-WindowMinutes`), not a single QuickStats reading.
-* **Hosts and clusters:** each host's active memory is compared with its physical DRAM, and each cluster is checked after a failure (N+1 or site failover).
+* **Hosts and clusters:** each host's active memory is compared with its physical DRAM, and each cluster is checked after a failure (N+1 or site failover). Hosts, clusters and VMs all carry *active / consumed*, the ratio that decides whether tiering has anything to move.
 * **All VMs:** every VM is listed, including powered-off ones. Templates are excluded and counted separately.
 * **Excel-ready CSVs:** UTF-8 with BOM and the locale's list separator; `;` whenever that separator is also the decimal separator.
 * **`-PassThru`:** returns the VM objects for further processing.
@@ -153,10 +157,12 @@ Manual/interactive use (re-uses an existing `Connect-VIServer` session if no cre
 | Report parameter | Default | |
 |---|---|---|
 | `-Days` | 30 | history in the report; above ~62 days host series are bucketed (2 h, 6 h …) |
-| `-StretchedCluster` / `-StretchedClusterName` | off | site-failover capacity (50%) instead of N+1, see above |
+| `-StretchedCluster` / `-StretchedClusterName` | off | site-failover capacity (50%) instead of N+1, see above (alias: `-StretchedClusters`) |
 | `-ThresholdPct` | 50 | tiering guidance, % of DRAM |
-| `-ColdPct` / `-HotPct` | 40 / 75 | per-VM hints, worst-day P95 of active vs. assigned memory |
+| `-ColdPct` / `-HotPct` | 40 / 75 | per-VM hints, worst-day P95 of active vs. configured memory |
 | `-Title`, `-SupportContact` | | report header |
+
+`memtier.py report` takes the same settings as `--days`, `--stretched-cluster`, `--stretched-clusters` (alias `--stretched-cluster-name`), `--threshold-pct`, `--cold-pct`, `--hot-pct`, `--title`, `--support-contact` and `--template`; each overrides the `.ini` file.
 
 Exit codes: `0` ok, `1` failed, `2` partial (some hosts/VMs returned no statistics). Task Scheduler shows these as the "Last Run Result".
 
@@ -200,15 +206,19 @@ Appliance notes:
 
 A single HTML file that works offline, in light and dark mode. Filters at the top (time range, vCenter, cluster, host metric, cluster failover model) apply to everything on the page.
 
-* **Host active memory as % of DRAM:** one small chart per host, sorted worst first. The line is the hourly P95 (switchable to average or max), the shaded area is the hourly maximum, and the dashed line is the 50% guidance. Verdicts:
+* **Memory tiering candidates:** one row per cluster, sorted best first. Three bars against the cluster's own DRAM — active P95, consumed P95 and configured — plus *active / consumed*, *active / configured* and the amount of cold memory currently held in DRAM. Verdicts:
+  * *Strong candidate* / *Good candidate*: active P95 stays at or below the guidance and at least 50% / 30% of consumed memory is cold.
+  * *Limited benefit* (≥ 15% cold) and *Little benefit*: the tier would have little to move.
+  * *Not suitable*: active memory alone is already above the guidance, so a tier would push hot pages onto NVMe. Add DRAM or rebalance first.
+* **Host active vs. consumed memory:** one small chart per host, sorted worst first. The blue line is the hourly P95 of active memory (switchable to average or max), the shaded area is the hourly maximum, the orange line is consumed memory, and the dashed line is the 50% guidance. All panels share one scale, so hosts compare directly — including hosts that already have a tier and consume more than their DRAM. Verdicts:
   * *Fits*: P95 over the time range is at or below the threshold.
   * *Fits, peaks above*: P95 is below, but the maximum crosses the threshold.
   * *Exceeds*: P95 is above the threshold.
-* **Cluster failover headroom:** active memory against the DRAM that survives a failure (N+1 or one site), plus a table with the capacity check. Consumed memory must fit into the surviving memory.
+* **Cluster failover headroom:** active memory against the DRAM that survives a failure (N+1 or one site), plus a table with the capacity check and the tiering ratios. Consumed memory must fit into the surviving memory.
 * **Weekday × hour heatmap:** shows batch windows, business hours and month-end peaks that a snapshot never shows.
-* **Hosts table:** DRAM/NVMe tier, assigned memory vs. DRAM, active avg/P95/max, balloon and swap.
-* **Virtual machines:** worst-day P95 of active vs. assigned memory, daily trend, balloon/swap flags, reservation and latency sensitivity. You can search, sort, filter and export to CSV. The *Cold/Warm/Hot* status is a right-sizing hint; tiering itself is decided per host and cluster.
-* **Collector runs:** coverage of hourly slots and failed or partial runs.
+* **Hosts table:** DRAM/NVMe tier, configured memory vs. DRAM, active avg/P95/max, consumed P95, *active / consumed*, *active / configured*, cold memory in DRAM, balloon and swap.
+* **Virtual machines:** worst-day P95 of active vs. configured memory, consumed avg, *active / consumed*, daily trend, balloon/swap flags, reservation and latency sensitivity. You can search, sort, filter and export to CSV. The *Cold/Warm/Hot* status is a right-sizing hint; tiering itself is decided per host and cluster. Per-VM sizes stay in GB regardless of the units switch.
+* **Collector runs:** coverage of hourly slots, failed or partial runs, and the collector's error message.
 
 ## Design notes
 
@@ -216,6 +226,7 @@ A single HTML file that works offline, in light and dark mode. Filters at the to
 |---|---|
 | Single `QuickStats` sample used for a tiering decision | hourly avg/P95/max from 20 s real-time samples, kept for months |
 | Unweighted average of per-VM percentages | weighted sums (MB / MB), per host and cluster |
+| "Active fits DRAM" treated as the whole tiering question | active *and* consumed *and* configured, so a cluster with no cold memory is not proposed for a tier |
 | No host "active vs. DRAM" metric, no failover view | both, with N+1 and stretched (site) failover, plus DRAM/NVMe tier sizes from `memoryTierInfo` |
 | Silent connection failure → "success: 0 VMs" | errors are logged, the run is recorded as `failed`, exit code 1 |
 | Script disconnects the user's session or mixes vCenters | `-NotDefault` connections owned by the script; every query uses `-Server`; keys are `vCenter\|MoRef` |

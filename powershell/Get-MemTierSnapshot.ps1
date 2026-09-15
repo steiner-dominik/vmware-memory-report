@@ -55,6 +55,7 @@ param (
     [double]$ColdPct = 40,
     [double]$HotPct = 75,
     [switch]$StretchedCluster,
+    [Alias('StretchedClusters')]
     [string[]]$StretchedClusterName = @(),
     [string]$Title = 'VMware Memory Tiering Snapshot',
     [string]$SupportContact = 'dominik.steiner@nts.eu',
@@ -220,22 +221,27 @@ foreach ($h in $hostObjects) {
 foreach ($key in $groups.Keys) {
     $members = $groups[$key]
     $stretched = $StretchedCluster.IsPresent -or ($StretchedClusterName -contains $members[0].cluster)
-    $dram = 0.0; $largest = 0.0; $mem = 0.0; $largestMem = 0.0; $p95 = 0.0; $max = 0.0; $consumed = 0.0
+    $dram = 0.0; $largest = 0.0; $mem = 0.0; $largestMem = 0.0; $p95 = 0.0; $max = 0.0; $consumed = 0.0; $consumedN = 0
     foreach ($h in $members) {
         $dram += $h.dramMB; $largest = [math]::Max($largest, [double]$h.dramMB)
         $mem += $h.dramMB + $h.nvmeMB; $largestMem = [math]::Max($largestMem, [double]($h.dramMB + $h.nvmeMB))
-        $p95 += $h.activeP95MB; $max += $h.activeMaxMB; $consumed += $h.consumedAvgMB
+        $p95 += $h.activeP95MB; $max += $h.activeMaxMB
+        if ($null -ne $h.consumedAvgMB) { $consumed += $h.consumedAvgMB; $consumedN++ }
     }
     $capacity = Get-FailoverCapacity $stretched $dram $largest $members.Count
     $capacityMem = Get-FailoverCapacity $stretched $mem $largestMem $members.Count
     $p95Pct = Get-Pct $p95 $capacity
     $maxPct = Get-Pct $max $capacity
-    $consumedPct = Get-Pct $consumed $capacityMem
+    # One host without consumed statistics would understate the cluster and fake a "Fits" verdict.
+    $complete = $consumedN -eq $members.Count
+    $consumedPct = if ($complete) { Get-Pct $consumed $capacityMem } else { $null }
+    $activeOverConsumed = if ($complete -and $consumed) { Get-Pct $p95 $consumed } else { $null }
     $clusterObjects.Add([pscustomobject][ordered]@{
             vc = $members[0].vc; cluster = $members[0].cluster; model = $(if ($stretched) { 'Stretched (50%)' } else { 'N+1' })
             hosts = $members.Count; dramMB = [long]$dram; capacityMB = [long]$capacity; capacityMemMB = [long]$capacityMem
             activeP95MB = [long]$p95; p95Pct = $p95Pct; maxPct = $maxPct; verdict = Get-Verdict $p95Pct $maxPct
-            consumedMB = [long]$consumed; consumedPct = $consumedPct; capacityVerdict = Get-CapacityVerdict $consumedPct
+            consumedMB = $(if ($complete) { [long]$consumed } else { $null }); consumedPct = $consumedPct
+            activeOverConsumedPct = $activeOverConsumed; capacityVerdict = Get-CapacityVerdict $consumedPct
         })
 }
 
@@ -261,7 +267,6 @@ $data = [ordered]@{
     }
     runs     = $runs
     hosts    = $hostObjects
-    clusters = $clusterObjects
     vms      = $vmObjects
 }
 $template = [System.IO.File]::ReadAllText($TemplatePath, [System.Text.Encoding]::UTF8)
@@ -310,7 +315,8 @@ if ($clusterObjects.Count -gt 0) {
     $clusterObjects | Sort-Object -Property p95Pct -Descending |
         Format-Table -AutoSize -Property @{ n = 'Cluster'; e = { $_.cluster } }, @{ n = 'Model'; e = { $_.model } }, @{ n = 'Hosts'; e = { $_.hosts } },
         @{ n = 'Surv. DRAM GB'; e = { '{0:N0}' -f ($_.capacityMB / 1024) }; a = 'Right' }, @{ n = 'P95 %'; e = { Format-Pct $_.p95Pct }; a = 'Right' },
-        @{ n = 'Tiering'; e = { $_.verdict } }, @{ n = 'Consumed %'; e = { Format-Pct $_.consumedPct }; a = 'Right' },
+        @{ n = 'Tiering'; e = { $_.verdict } }, @{ n = 'Act/Cons %'; e = { Format-Pct $_.activeOverConsumedPct }; a = 'Right' },
+        @{ n = 'Consumed %'; e = { Format-Pct $_.consumedPct }; a = 'Right' },
         @{ n = 'Capacity'; e = { $_.capacityVerdict } } | Out-Host
 }
 foreach ($r in $runs) {

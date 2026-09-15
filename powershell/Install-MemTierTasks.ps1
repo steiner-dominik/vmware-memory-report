@@ -36,6 +36,7 @@ param (
     [int]$Days = 30,
     [switch]$CompressOldMonths,
     [switch]$StretchedCluster,
+    [Alias('StretchedClusters')]
     [string[]]$StretchedClusterName = @(),
     [switch]$SkipConnectionTest
 )
@@ -104,7 +105,11 @@ Register-ScheduledTask -TaskName 'MemTier Collector' -Description 'Hourly VMware
     -Action $collectAction -Trigger $collectTrigger -Settings $settings -User $user -Password $password -RunLevel Limited -Force | Out-Null
 
 $reportSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
-$reportTrigger = New-ScheduledTaskTrigger -Daily -At ([datetime]::ParseExact($ReportTime, 'HH:mm', $null))
+# 'HH:mm' alone rejected a single-digit hour such as -ReportTime '6:30'.
+# [string[]] matters: without the cast PowerShell binds the single-format overload.
+$reportAt = [datetime]::ParseExact($ReportTime.Trim(), [string[]]@('H:mm', 'HH:mm', 'H:mm:ss', 'HH:mm:ss'),
+    [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None)
+$reportTrigger = New-ScheduledTaskTrigger -Daily -At $reportAt
 $reportAction = New-ScheduledTaskAction -Execute $exe -Argument $reportArgs -WorkingDirectory $here
 Register-ScheduledTask -TaskName 'MemTier Report' -Description 'Daily VMware memory tiering trend report' `
     -Action $reportAction -Trigger $reportTrigger -Settings $reportSettings -User $user -Password $password -RunLevel Limited -Force | Out-Null
