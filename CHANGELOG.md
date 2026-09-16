@@ -4,6 +4,45 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.09.04
+
+Everything in the report now has to earn its place by answering a tiering question.
+
+- **The "cluster failover headroom" section is gone.** It compared consumed memory with
+  the capacity surviving a failure, which is ordinary HA admission control - vCenter
+  answers that better, and it has nothing to do with tiering.
+- **What replaced it is the question that *is* tiering-specific**: after a host or a site
+  is lost, the same hot working set lands on fewer hosts, so it has to fit less DRAM. A
+  cluster sized right at the 50% limit crosses it the moment a host dies, and the failure
+  mode is the tier serving hot pages while the cluster is already degraded. Now a badge
+  and a figure, computed per cluster from its own failover model.
+- **Stretched clusters became a sizing input** rather than a section. The new "failure to
+  survive" switch decides whether the sizing reserves capacity for a failure; it defaults
+  to none, because folding a reserve in by default quietly turns every saving into zero.
+- **The heatmap moved to active over consumed memory**, the metric the decision is made
+  on, with bins straddling the candidate threshold. Against DRAM it mostly showed when
+  the hosts were busy, which is a different question.
+- **DRAM is sized in DIMMs.** The sizing rounds up to a population that can actually be
+  ordered - 16, 32, 48, 64, 96, 128 and 256 GB modules, up to 48 per host - and names
+  one, e.g. `20 x 32 GB`. On the mock fleet that turns 4.07 TB of theoretical saving into
+  3.50 TB of buildable saving. For equal totals it prefers more, smaller modules, because
+  populating every channel is what gives the bandwidth.
+- **The candidate bars show a "DRAM after tiering" line**, so the decision is one glance:
+  the active bar has to sit well under it.
+- **Memory tier counters are discovered and reported.** How much a host currently keeps on
+  its NVMe tier is not in the inventory - `memoryTierInfo` only gives the tier sizes - and
+  the per-tier performance counters have moved between vSphere releases. The collector now
+  lists whatever `mem.*tier*` counters its vCenter publishes, records them in the run row
+  and exposes them on `sensor.<prefix>_status`, so the next release can collect the right
+  ones instead of guessing.
+
+### Compatibility
+
+- Monthly CSV files gain a `TierCounters` column. A file whose header is a prefix of the
+  current one is now **widened in place** instead of refused, so an upgrade no longer
+  strands the running month. A header that is not a prefix is still refused. Both editions
+  do this identically.
+
 ## 26.09.03
 
 The report was showing everything it knows at once. It now opens on the decision and

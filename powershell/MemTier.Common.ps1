@@ -24,7 +24,7 @@ $script:VmFields = @(
 )
 $script:RunFields = @(
     'Timestamp', 'VCenter', 'Status', 'Hosts', 'HostsConnected', 'VMsTotal', 'VMsOn', 'VMsOff', 'VMsSuspended',
-    'Templates', 'VMsExcluded', 'VMsWithoutStats', 'HostsWithoutStats', 'DurationSec', 'Message'
+    'Templates', 'VMsExcluded', 'VMsWithoutStats', 'HostsWithoutStats', 'DurationSec', 'Message', 'TierCounters'
 )
 
 # ---------------------------------------------------------------------------
@@ -128,6 +128,30 @@ function ConvertTo-MemTierCsvField($Value) {
     return $s
 }
 
+function Expand-MemTierCsv {
+    <# Rewrites a monthly file with additional trailing columns, empty for the existing rows. #>
+    param([string]$Path, [int]$OldCount, [string[]]$Fields)
+    Write-MemTierLog ("adding {0} new column(s) to {1}" -f ($Fields.Count - $OldCount), $Path)
+    $pad = ',' * ($Fields.Count - $OldCount)
+    $tmp = '{0}.{1}.tmp' -f $Path, $PID
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $reader = New-Object System.IO.StreamReader($Path, [System.Text.Encoding]::UTF8, $true)
+    try {
+        $writer = New-Object System.IO.StreamWriter($tmp, $false, $encoding)
+        try {
+            $writer.NewLine = "`r`n"
+            [void]$reader.ReadLine()
+            $writer.WriteLine($Fields -join ',')
+            while ($null -ne ($line = $reader.ReadLine())) {
+                if ($line.Length -gt 0) { $writer.WriteLine($line + $pad) }
+            }
+        }
+        finally { $writer.Dispose() }
+    }
+    finally { $reader.Dispose() }
+    [System.IO.File]::Replace($tmp, $Path, [NullString]::Value)
+}
+
 function Add-MemTierCsv {
     param([string]$Path, [string[]]$Fields, [System.Collections.IEnumerable]$Rows)
     $list = @($Rows)
@@ -136,7 +160,14 @@ function Add-MemTierCsv {
     if ($exists) {
         $reader = New-Object System.IO.StreamReader($Path, [System.Text.Encoding]::UTF8, $true)
         try { $header = $reader.ReadLine() } finally { $reader.Dispose() }
-        if ($header -ne ($Fields -join ',')) { throw "$Path has an unexpected header - move it away and rerun" }
+        if ($header -ne ($Fields -join ',')) {
+            # Releases add columns. A file whose header is a prefix of the current one is widened
+            # in place rather than refused, so an upgrade does not strand the running month.
+            $old = @($header -split ',')
+            $isPrefix = $old.Count -lt $Fields.Count -and (($Fields[0..($old.Count - 1)] -join ',') -eq $header)
+            if ($isPrefix) { Expand-MemTierCsv -Path $Path -OldCount $old.Count -Fields $Fields }
+            else { throw "$Path has an unexpected header - move it away and rerun" }
+        }
     }
     $encoding = New-Object System.Text.UTF8Encoding($false)
     $writer = New-Object System.IO.StreamWriter($Path, $true, $encoding)
@@ -433,18 +464,37 @@ function Get-MemTierInventory {
     @{ HostMeta = $hostMeta; Vms = $vms; Counts = $counts }
 }
 
-function Get-MemTierCounterIds {
-    param($PerfManager, [string[]]$Names)
+function Get-MemTierCounterIndex {
+    param($PerfManager)
     $index = @{}
     foreach ($c in $PerfManager.PerfCounter) {
         $index['{0}.{1}.{2}' -f $c.GroupInfo.Key, $c.NameInfo.Key, $c.RollupType] = [int]$c.Key
     }
+    $index
+}
+
+function Get-MemTierCounterIds {
+    param($PerfManager, [string[]]$Names, $Index)
+    if (-not $Index) { $Index = Get-MemTierCounterIndex $PerfManager }
     $ids = [ordered]@{}
     foreach ($n in $Names) {
-        if (-not $index.Contains($n)) { throw "performance counter $n not found" }
-        $ids[$n] = $index[$n]
+        if (-not $Index.Contains($n)) { throw "performance counter $n not found" }
+        $ids[$n] = $Index[$n]
     }
     $ids
+}
+
+function Get-MemTierTierCounters {
+    <#
+        Memory-tiering counters this vCenter offers.
+
+        How much memory a host currently keeps on its NVMe tier is not part of the inventory:
+        Hardware.MemoryTierInfo only gives the tier sizes. vSphere 8.0 U3 and later publish
+        per-tier performance counters, but their names have moved between releases, so they are
+        discovered rather than assumed.
+    #>
+    param($Index)
+    @($Index.Keys | Where-Object { $_ -like 'mem.*' -and $_ -match 'tier' } | Sort-Object)
 }
 
 function Invoke-MemTierPerfQuery {
@@ -512,13 +562,15 @@ function Get-MemTierStatistics {
     param($VI, $Inventory, [datetime]$StartUtc, [int]$BatchSize = 50)
     $si = Get-View -Server $VI ServiceInstance
     $perfManager = Get-View -Server $VI -Id $si.Content.PerfManager
-    $hostCounterIds = Get-MemTierCounterIds $perfManager $script:HostCounters
-    $vmCounterIds = Get-MemTierCounterIds $perfManager $script:VmCounters
+    $counterIndex = Get-MemTierCounterIndex $perfManager
+    $hostCounterIds = Get-MemTierCounterIds $perfManager $script:HostCounters $counterIndex
+    $vmCounterIds = Get-MemTierCounterIds $perfManager $script:VmCounters $counterIndex
 
     $liveHosts = @($Inventory.HostMeta.Values | Where-Object { $_.State -eq 'connected' } | ForEach-Object { $_.MoRef })
     $vmEntities = @($Inventory.Vms | Where-Object { $_.Collect } | ForEach-Object { $_.MoRef })
 
-    $out = @{ Hosts = @{}; Vms = @{}; LiveHosts = $liveHosts.Count }
+    $out = @{ Hosts = @{}; Vms = @{}; LiveHosts = $liveHosts.Count
+        TierCounters = Get-MemTierTierCounters $counterIndex }
     foreach ($pass in @(
             @{ Kind = 'Hosts'; Entities = $liveHosts; Ids = $hostCounterIds; Swap = 'mem.swapused.average' },
             @{ Kind = 'Vms'; Entities = $vmEntities; Ids = $vmCounterIds; Swap = 'mem.swapped.average' })) {

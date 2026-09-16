@@ -171,8 +171,8 @@ The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmwa
   * A second badge says whether the hot set still fits today's DRAM (*Hot set fits DRAM* / *DRAM-bound today*). That one only limits tiering on hosts you already own.
 * **Sizing:** `DRAM needed`, `DRAM saved`, `Capacity with a tier` and `Extra memory` per cluster — the two buying decisions, with numbers.
 * **Host charts:** active and consumed memory per host over time, with the 50% feasibility line.
-* **Cluster failover headroom:** does active memory still fit after a host or site failure?
-* **Weekday × hour heatmap:** batch windows and business hours at a glance.
+* **Hot set after a failure:** does the working set still fit the DRAM that survives a host or site failure? A cluster sized right at the limit fails that test, and the failure mode is the tier serving hot pages while the cluster is already degraded.
+* **Weekday × hour heatmap:** when the working set is hottest — active as a share of *consumed*, so it shows when a tier is under the most pressure rather than when the hosts are merely busy.
 * **Hosts and VMs tables:** searchable, sortable, exportable to CSV.
 * **Collector runs:** gaps and failed runs are visible, nothing fails silently.
 * **Language:** English and German, switchable in the report itself (the choice is remembered per browser).
@@ -193,6 +193,28 @@ on the ratio at all.
 
 Note that `DRAM saved` stops improving past a point: once the hot-set limit (active P95 ÷ 50%)
 becomes the binding constraint, a bigger tier adds capacity but no further DRAM saving.
+
+### DRAM is bought in DIMMs
+
+The sizing rounds up to a population you can actually order — 16, 32, 48, 64, 96, 128 and 256 GB
+modules, up to 48 per host — and names one, e.g. `20 × 32 GB`. Rounding costs something: on the
+mock fleet it turns 4.07 TB of theoretical saving into 3.50 TB of buildable saving, which is the
+number worth quoting. Populating every channel is what gives the bandwidth, so the report prefers
+more, smaller modules over fewer, larger ones at the same total.
+
+### What about failover?
+
+Whether *consumed* memory fits after a host failure is ordinary HA admission control, and vCenter
+already answers it better than this report could — so that section is gone. What is specific to
+tiering is different: after a failure the same hot working set lands on fewer hosts, so it has to
+fit **less DRAM**. A cluster sized right at the 50% limit crosses it the moment a host dies, and
+the failure mode is the NVMe tier serving hot pages while the cluster is already degraded. That
+one check is kept, as a badge and a KPI.
+
+The **Failure to survive** switch decides whether the *sizing* reserves capacity for it. It
+defaults to **none** — size for the workload as it runs — because folding a reserve in by default
+quietly turns every saving into zero. For a stretched cluster, pick *Stretched*: only half the
+cluster is ever available, so everything should be sized against that half.
 
 ## 🧮 The arithmetic, on one page
 

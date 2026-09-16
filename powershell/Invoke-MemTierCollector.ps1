@@ -145,6 +145,10 @@ function Invoke-VCenterCollection {
         $run.Templates = $counts.Templates; $run.VMsExcluded = $counts.Excluded; $run.VMsWithoutStats = $vmsWithout
         $run.HostsWithoutStats = $hostsWithout
         $run.Message = if ($partial) { 'perf query failed for {0} hosts, {1} VMs' -f $stats.HostsFailed, $stats.VmsFailed } else { '' }
+        $run.TierCounters = @($stats.TierCounters) -join ';'
+        if ($stats.TierCounters.Count) {
+            Write-MemTierLog ("{0} publishes memory tier counters: {1}" -f $Server, ($stats.TierCounters -join ', '))
+        }
         Write-MemTierLog ('{0}: {1} hosts ({2} connected), {3} VMs ({4} powered on, {5} with stats), {6} templates' -f
             $Server, $hostMeta.Count, $stats.LiveHosts, $counts.Total, $counts.On, $vmRows.Count, $counts.Templates)
     }

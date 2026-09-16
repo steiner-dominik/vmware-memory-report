@@ -60,7 +60,7 @@ VM_FIELDS = [
 ]
 RUN_FIELDS = [
     "Timestamp", "VCenter", "Status", "Hosts", "HostsConnected", "VMsTotal", "VMsOn", "VMsOff", "VMsSuspended",
-    "Templates", "VMsExcluded", "VMsWithoutStats", "HostsWithoutStats", "DurationSec", "Message",
+    "Templates", "VMsExcluded", "VMsWithoutStats", "HostsWithoutStats", "DurationSec", "Message", "TierCounters",
 ]
 
 HOST_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.average", "mem.swapused.average"]
@@ -386,6 +386,7 @@ class ViJsonClient(object):
         self.release = api_release
         self.session_id = None
         self.content = None
+        self._counters = None
         if verify_tls:
             self.ssl_context = ssl.create_default_context(cafile=ca_file)
         else:
@@ -559,16 +560,36 @@ class ViJsonClient(object):
 
     # --- performance ---------------------------------------------------------
     def counter_ids(self, names):
-        perf = self.content["perfManager"]["value"]
-        counters = unbox(self.get_property("PerformanceManager", perf, "perfCounter")) or []
-        lookup = {}
-        for c in counters:
-            key = "%s.%s.%s" % (c["groupInfo"]["key"], c["nameInfo"]["key"], unbox(c["rollupType"]))
-            lookup[key] = c["key"]
+        lookup = self.counter_lookup()
         missing = [n for n in names if n not in lookup]
         if missing:
             raise MemTierError("performance counters not found on %s: %s" % (self.server, ", ".join(missing)))
         return dict((n, lookup[n]) for n in names)
+
+    def counter_lookup(self):
+        """{"group.name.rollup": counterId} for every counter this vCenter publishes, cached."""
+        if self._counters is None:
+            perf = self.content["perfManager"]["value"]
+            counters = unbox(self.get_property("PerformanceManager", perf, "perfCounter")) or []
+            lookup = {}
+            for c in counters:
+                key = "%s.%s.%s" % (c["groupInfo"]["key"], c["nameInfo"]["key"], unbox(c["rollupType"]))
+                lookup[key] = c["key"]
+            self._counters = lookup
+        return self._counters
+
+    def tier_counters(self):
+        """Memory-tiering counters this vCenter offers.
+
+        How much memory a host currently keeps on its NVMe tier is not part of the inventory:
+        hardware.memoryTierInfo only gives the tier sizes. vSphere 8.0 U3 and later publish
+        per-tier performance counters, but their names have moved between releases, so they are
+        discovered rather than assumed. What is found is logged and reported, which is how the
+        next release learns which ones to collect.
+        """
+        found = sorted(n for n in self.counter_lookup()
+                       if n.startswith("mem.") and "tier" in n.lower())
+        return found
 
     def query_perf(self, entity_type, counter_map, start):
         """Returns {entity_id: {counter_name: [values]}}; splits batches that fault and skips entities that fail alone."""
@@ -616,6 +637,29 @@ def perf_batches(client, entity_type, ids, counter_map, start, batch_size):
 # CSV storage
 # ----------------------------------------------------------------------------
 
+def widen_csv(path, header, fields):
+    """Add new trailing columns to an existing monthly file, in place.
+
+    Releases add columns. Refusing to append would strand a month of history on the day of an
+    upgrade, so a file whose header is a prefix of the current one is rewritten with the new
+    header and empty values for the new columns. Anything else is still refused: that is a file
+    this tool did not write.
+    """
+    LOG.info("adding %d new column(s) to %s", len(fields) - len(header), path)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with io.open(path, "r", encoding="utf-8-sig", newline="") as src, \
+            io.open(tmp, "w", encoding="utf-8", newline="") as dst:
+        reader = csv.reader(src)
+        writer = csv.writer(dst, lineterminator="\r\n")
+        next(reader, None)
+        writer.writerow(fields)
+        pad = [""] * (len(fields) - len(header))
+        for row in reader:
+            if row:
+                writer.writerow(row + pad)
+    os.replace(tmp, path)
+
+
 def append_csv(path, fields, rows):
     if not rows:
         return
@@ -624,7 +668,10 @@ def append_csv(path, fields, rows):
         with io.open(path, "r", encoding="utf-8-sig", newline="") as handle:
             header = next(csv.reader(handle), [])
         if header != fields:
-            raise MemTierError("%s has an unexpected header - move it away and rerun" % path)
+            if len(header) < len(fields) and header == fields[:len(header)]:
+                widen_csv(path, header, fields)
+            else:
+                raise MemTierError("%s has an unexpected header - move it away and rerun" % path)
     with io.open(path, "a", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore", lineterminator="\r\n")
         if not exists:
@@ -762,6 +809,12 @@ def collect_vcenter(cfg, server, now):
         live_hosts = [mid for mid, h in host_meta.items() if h["state"] == "connected"]
         host_counters = client.counter_ids(HOST_COUNTERS)
         vm_counters = client.counter_ids(VM_COUNTERS)
+        tier_counters = client.tier_counters()
+        if tier_counters:
+            LOG.info("%s publishes memory tier counters: %s", server, ", ".join(tier_counters))
+        elif any(h["nvme"] for h in host_meta.values()):
+            LOG.info("%s has hosts with an NVMe tier but publishes no mem.*tier* counters - "
+                     "tier sizes are reported, current tier usage is not available", server)
         host_stats, host_failed = perf_batches(client, "HostSystem", live_hosts, host_counters, start, cfg.batch_size)
         vm_stats, vm_failed = perf_batches(client, "VirtualMachine", sorted(vm_meta), vm_counters, start, cfg.batch_size)
 
@@ -811,6 +864,7 @@ def collect_vcenter(cfg, server, now):
             "HostsWithoutStats": hosts_without,
             "Message": ("perf query failed for %d hosts, %d VMs" % (len(host_failed), len(vm_failed))) if partial else "",
         })
+        run["TierCounters"] = ";".join(tier_counters)
         LOG.info("%s: %d hosts (%d connected), %d VMs (%d powered on, %d with stats), %d templates",
                  server, len(host_meta), len(live_hosts), counts["total"], counts["on"], len(vm_rows), counts["templates"])
     except Exception as exc:

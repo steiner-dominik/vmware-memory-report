@@ -298,8 +298,13 @@ class RenderTest(unittest.TestCase):
             """The one data row, keyed by its full column heading."""
             rows = self.render("simple", tier)["sizing"]
             self.assertEqual(len(rows), 2, "expected one cluster row")
-            return dict((head, float(cell.replace(",", "")))
-                        for head, cell in zip(rows[0][1:], rows[1][1:]))
+            out = {}
+            for head, cell in zip(rows[0][1:], rows[1][1:]):
+                try:
+                    out[head] = float(cell.replace(",", ""))
+                except ValueError:
+                    out[head] = cell          # e.g. the DIMM population, "8 x 16 GB"
+            return out
         small, big = figures("50"), figures("400")
         needed = [k for k in small if k.startswith("DRAM needed")][0]
         saved = [k for k in small if k.startswith("DRAM saved")][0]

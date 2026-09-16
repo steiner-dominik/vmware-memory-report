@@ -99,6 +99,7 @@ button.btn:hover, .seg button:hover { background: var(--surface-2); }
 .key-line { width: 16px; height: 2px; background: var(--series-1); }
 .key-area { width: 12px; height: 12px; background: var(--series-1-fill); border-radius: 2px; }
 .key-thr { width: 16px; border-top: 2px dashed var(--muted); }
+.key-tier { width: 16px; border-top: 3px solid var(--series-3); }
 .badge { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; color: var(--ink); }
 .badge::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--c, var(--muted)); flex: none; }
 .badge.good { --c: var(--good); } .badge.warning { --c: var(--warning); }
@@ -135,6 +136,7 @@ tbody tr:hover { background: var(--surface-2); }
 .candaxis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .cand.first { padding-top: 22px; }
 .cand .g.thr { border-left: 2px dashed var(--ink-2); opacity: 0.65; }
+.cand .g.tierline { border-left: 3px solid var(--series-3); opacity: 0.9; }
 .cand .fig { display: grid; grid-template-columns: repeat(3, minmax(60px, auto)) minmax(118px, auto); gap: 16px; justify-content: end; align-items: baseline; }
 .cand .fig > div { text-align: right; min-width: 0; }
 .cand .fig .l { font-size: 11px; color: var(--muted); }
@@ -213,7 +215,7 @@ footer a { color: var(--accent); }
       <label><span data-i18n="fVcenter">vCenter</span><select id="fVc"></select></label>
       <label><span data-i18n="fCluster">Cluster</span><select id="fCluster"></select></label>
       <label data-adv><span data-i18n="fMetric">Host metric</span><span class="seg" id="metric"></span></label>
-      <label data-adv><span data-i18n="fFailover">Cluster failover</span><select id="fFailover"></select></label>
+      <label><span data-i18n="fFailover">Failure to survive</span><select id="fFailover"></select></label>
       <label><span data-i18n="fUnits">Units</span><span class="seg" id="units"></span></label>
       <label><span data-i18n="fLang">Language</span><select id="fLang"></select></label>
     </div>
@@ -230,6 +232,7 @@ footer a { color: var(--accent); }
         <span><i class="key-sw s2"></i><span data-i18n="lgConsumedP95">Consumed (P95)</span></span>
         <span><i class="key-sw s3"></i><span data-i18n="lgConfigured">Configured (assigned to powered-on VMs)</span></span>
         <span><i class="key-thr"></i><span id="lgThr0"></span></span>
+        <span><i class="key-tier"></i><span data-i18n="lgTierLine">DRAM after tiering</span></span>
       </div>
       <div id="candList"></div>
       <p class="note" id="candNote"></p>
@@ -263,20 +266,7 @@ footer a { color: var(--accent); }
       <div class="panels" id="hostPanels"></div>
     </section>
 
-    <section class="card" data-adv>
-      <h2 data-i18n="secFailover">Cluster failover headroom</h2>
-      <p class="hint" id="clusterHint"></p>
-      <div class="legend">
-        <span><i class="key-line"></i><span id="lgMetric2">Hourly P95</span></span>
-        <span><i class="key-area"></i><span class="lgMax"></span></span>
-        <span><i class="key-line2"></i><span data-i18n="lgConsumed">Consumed</span></span>
-        <span><i class="key-thr"></i><span id="lgThr2">Tiering guidance</span></span>
-      </div>
-      <div class="panels" id="clusterPanels"></div>
-      <div class="tablewrap" style="margin-top:14px"><table id="clusterTable"></table></div>
-    </section>
-
-    <section class="card" data-adv>
+        <section class="card" data-adv>
       <h2 data-i18n="secHeat">When is memory active? (weekday × hour)</h2>
       <p class="hint" id="heatHint"></p>
       <div class="tablewrap"><div class="heat" id="heat" role="grid" aria-label="Active memory heatmap"></div></div>
@@ -356,6 +346,18 @@ footer a { color: var(--accent); }
   // {0}, {1} ... are replaced with the arguments of t().
   var I18N = {
     en: {
+      foNone: "None (steady state)",
+      kHotAfterFail: "Hot set still fits after a failure", kHotAfterFailSub: "{0} • active P95 under {1}% of the DRAM left",
+      lgTierLine: "DRAM after tiering",
+      ttTierLine: "DRAM after tiering: {0} ({1} per host)",
+      cPerHost: "DRAM per host", cBuild: "DIMMs per host",
+      ttPerHost: "The cluster requirement divided by its hosts, rounded up to a population you can actually buy",
+      ttBuild: "A DIMM population that reaches that size; other combinations exist",
+      sizingDimms: "DRAM is rounded up to what DIMMs can build ({0} GB modules, up to 48 per host). " +
+        "Populating every channel is what gives the bandwidth, so prefer more, smaller modules.",
+      sizingFailure: "Sizing reserves capacity for the selected failure, so the hot set still fits the DRAM that survives it.",
+      verdictAfterFail: "The hot set fits today, but after the selected failure {0} cluster(s) would need more than {1}% of the DRAM left. " +
+        "A tier would start serving hot pages exactly when the cluster is already degraded.",
       fMode: "View", fTier: "NVMe tier", mSimple: "Simple", mExpert: "Everything",
       verdictHead: "{0} – {1} of the memory your hosts back is cold",
       verdictBody: "Active memory is {0} of consumed memory, so about {1} sits in DRAM without being touched. " +
@@ -367,7 +369,7 @@ footer a { color: var(--accent); }
       tierHint: "NVMe tier as % of DRAM, the way it is configured on the host: 100% is the 1:1 default. " +
         "It changes the sizing only - whether a cluster is a candidate does not depend on it.",
       fRange: "Time range", fVcenter: "vCenter", fCluster: "Cluster", fMetric: "Host metric",
-      fFailover: "Cluster failover", fUnits: "Units", fLang: "Language",
+      fFailover: "Failure to survive", fUnits: "Units", fLang: "Language",
       all: "All", rangeAll: "All ({0} d)", rangeHours: "24 h", rangeDays: "{0} d",
       mAvg: "Avg", mP95: "P95", mMax: "Max", uAuto: "Auto",
       labAvg: "Average per interval", labP95: "P95 per interval", labMax: "Max per interval",
@@ -471,10 +473,11 @@ footer a { color: var(--accent); }
       vFitsCap: "Fits", vTight: "Tight", vNotFit: "Does not fit",
 
       // heatmap
-      secHeat: "When is memory active? (weekday × hour)",
-      heatHint: "Average active memory as % of DRAM for the selected hosts, in your browser's local time zone. Useful for " +
-        "finding batch windows - the sizing numbers above already include these peaks.",
-      heatCell: "Average active of DRAM", heatSamples: "Intervals sampled", heatNoData: "no data",
+      secHeat: "When is the working set hot? (weekday × hour)",
+      heatHint: "Active as % of consumed memory for the selected hosts, in your browser's local time zone: when the working " +
+        "set heats up, a tier is under the most pressure. Dark cells are above the {0}% candidate line. The sizing above " +
+        "already includes these peaks.",
+      heatCell: "Active of consumed", heatSamples: "Intervals sampled", heatNoData: "no data",
 
       // host table
       secHostTable: "Hosts",
@@ -519,6 +522,18 @@ footer a { color: var(--accent); }
       rOk: "ok", rPartial: "partial", rFailed: "failed"
     },
     de: {
+      foNone: "Keiner (Normalbetrieb)",
+      kHotAfterFail: "Heißer Anteil passt nach einem Ausfall", kHotAfterFailSub: "{0} • aktiv P95 unter {1} % des verbleibenden DRAM",
+      lgTierLine: "DRAM nach Tiering",
+      ttTierLine: "DRAM nach Tiering: {0} ({1} je Host)",
+      cPerHost: "DRAM je Host", cBuild: "DIMMs je Host",
+      ttPerHost: "Der Clusterbedarf geteilt durch seine Hosts, aufgerundet auf eine real bestückbare Größe",
+      ttBuild: "Eine DIMM-Bestückung, die diese Größe erreicht; andere Kombinationen sind möglich",
+      sizingDimms: "DRAM wird auf real bestückbare Größen aufgerundet ({0} GB Module, bis zu 48 je Host). " +
+        "Die Bandbreite kommt daher, alle Kanäle zu bestücken - also lieber mehr und kleinere Module.",
+      sizingFailure: "Das Sizing hält Kapazität für den gewählten Ausfall frei, damit der heiße Anteil auch in das verbleibende DRAM passt.",
+      verdictAfterFail: "Heute passt der heiße Anteil, nach dem gewählten Ausfall bräuchten aber {0} Cluster mehr als {1} % des " +
+        "verbleibenden DRAM. Ein Tier würde dann genau dann heiße Seiten bedienen, wenn der Cluster ohnehin schon degradiert ist.",
       fMode: "Ansicht", fTier: "NVMe-Tier", mSimple: "Einfach", mExpert: "Alles",
       verdictHead: "{0} – {1} des von den Hosts hinterlegten Speichers ist kalt",
       verdictBody: "Der aktive Speicher beträgt {0} des belegten Speichers, rund {1} liegen also im DRAM, ohne " +
@@ -530,7 +545,7 @@ footer a { color: var(--accent); }
       tierHint: "NVMe-Tier als % des DRAM, so wie es am Host konfiguriert wird: 100 % ist die Voreinstellung 1:1. " +
         "Es ändert nur das Sizing – ob ein Cluster Kandidat ist, hängt nicht davon ab.",
       fRange: "Zeitraum", fVcenter: "vCenter", fCluster: "Cluster", fMetric: "Host-Metrik",
-      fFailover: "Cluster-Ausfall", fUnits: "Einheiten", fLang: "Sprache",
+      fFailover: "Zu überstehender Ausfall", fUnits: "Einheiten", fLang: "Sprache",
       all: "Alle", rangeAll: "Alles ({0} T)", rangeHours: "24 Std.", rangeDays: "{0} T",
       mAvg: "Ø", mP95: "P95", mMax: "Max", uAuto: "Auto",
       labAvg: "Durchschnitt je Intervall", labP95: "P95 je Intervall", labMax: "Maximum je Intervall",
@@ -629,10 +644,11 @@ footer a { color: var(--accent); }
       ttConsSurvCol: "P95 des belegten Speichers als % des verbleibenden Speichers (DRAM + NVMe-Tier) - muss unter 100 % bleiben",
       vFitsCap: "Passt", vTight: "Knapp", vNotFit: "Passt nicht",
 
-      secHeat: "Wann ist Speicher aktiv? (Wochentag × Stunde)",
-      heatHint: "Durchschnittlicher aktiver Speicher als % des DRAM für die gewählten Hosts, in der lokalen Zeitzone des " +
-        "Browsers. Nützlich, um Batch-Fenster zu finden - die Sizing-Zahlen oben enthalten diese Spitzen bereits.",
-      heatCell: "Ø aktiv vom DRAM", heatSamples: "Erfasste Intervalle", heatNoData: "keine Daten",
+      secHeat: "Wann ist der Arbeitssatz heiß? (Wochentag × Stunde)",
+      heatHint: "Aktiv als % des belegten Speichers für die gewählten Hosts, in der lokalen Zeitzone des Browsers: Wenn der " +
+        "Arbeitssatz heiß wird, steht ein Tier am stärksten unter Druck. Dunkle Zellen liegen über der Kandidatengrenze " +
+        "von {0} %. Das Sizing oben enthält diese Spitzen bereits.",
+      heatCell: "Aktiv von belegt", heatSamples: "Erfasste Intervalle", heatNoData: "keine Daten",
 
       secHostTable: "Hosts",
       hostTableHint: "Werte über den gewählten Zeitraum. „Aktiv / belegt“ ist die Entscheidungsgröße; „Heißer Anteil“ " +
@@ -821,10 +837,16 @@ footer a { color: var(--accent); }
   // config    : stretched for the clusters named at build time, N+1 for the rest
   var FO = M.failover || { stretched: false, stretchedClusters: [] };
   FO.stretchedClusters = FO.stretchedClusters || [];
-  state.failover = FO.stretched ? "stretched" : FO.stretchedClusters.length ? "config" : "n1";
+  // Default: size for the workload as it runs. Reserving for a failure is a deliberate choice,
+  // and folding it in by default would quietly turn every saving into zero.
+  state.failover = "none";
+  function naturallyStretched(clusterName) {
+    return FO.stretched ||
+      stretchedLower.indexOf(String(clusterName == null ? "" : clusterName).toLowerCase()) >= 0;
+  }
   function refreshFailover() {
-    var options = [["n1", t("foN1")], ["stretched", t("foStretched")]];
-    if (!FO.stretched && FO.stretchedClusters.length) options.unshift(["config", t("foConfig", FO.stretchedClusters.length)]);
+    var options = [["none", t("foNone")], ["n1", t("foN1")], ["stretched", t("foStretched")]];
+    if (!FO.stretched && FO.stretchedClusters.length) options.splice(1, 0, ["config", t("foConfig", FO.stretchedClusters.length)]);
     var sel = $("fFailover");
     sel.textContent = "";
     options.forEach(function (o) { sel.appendChild(el("option", { value: o[0] }, o[1])); });
@@ -953,23 +975,56 @@ footer a { color: var(--accent); }
   }
 
   // ---------- sizing ----------
+  // DRAM is bought in DIMMs, so a requirement of 137 GB per host is really "populate 12 x 16 GB".
+  // Populations cover 8- and 12-channel CPUs, one or two sockets, one or two DIMMs per channel.
+  var DIMM_GB = [16, 32, 48, 64, 96, 128, 256];
+  // Small counts matter: a two-host lab sized at 20 GB should not be rounded up to a
+  // fully populated 8-channel board. For equal totals the most modules wins, because
+  // spreading across channels is what gives the bandwidth.
+  var DIMM_COUNTS = [1, 2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 48];
+  var BUILDABLE = (function () {
+    var seen = {}, out = [];
+    DIMM_GB.forEach(function (gb) {
+      DIMM_COUNTS.forEach(function (n) {
+        var mb = gb * 1024 * n;
+        if (!seen[mb]) { seen[mb] = 1; out.push({ mb: mb, gb: gb, n: n }); }
+      });
+    });
+    out.sort(function (a, b) { return a.mb - b.mb || b.n - a.n; });
+    return out;
+  })();
+  function buildable(perHostMB) {
+    for (var i = 0; i < BUILDABLE.length; i++) if (BUILDABLE[i].mb >= perHostMB) return BUILDABLE[i];
+    return null;   // past the biggest population we can describe; the raw figure is used instead
+  }
+
   // Two constraints decide how much DRAM a workload needs once a tier is in play:
   //   1. the hot working set must stay at or below THR% of DRAM      -> DRAM >= activeP95 / (THR/100)
   //   2. total memory is DRAM + NVMe, and NVMe is at most ratio x DRAM -> DRAM >= consumedPeak / (1 + ratio)
-  // The larger of the two wins. Everything above it is DRAM that would not have to be bought again.
-  function sizing(dramMB, nvmeMB, activeSizeMB, consPeakMB) {
+  // Both are divided by the share of the cluster that survives the failure being planned for, so a
+  // stretched cluster (half the hosts left) is sized against half the hosts.
+  function sizing(dramMB, nvmeMB, activeSizeMB, consPeakMB, hostCount, capDramMB) {
     if (!dramMB || activeSizeMB == null || consPeakMB == null) return null;
-    var needHot = activeSizeMB / (THR / 100);
-    var needTotal = consPeakMB / (1 + ratio());
-    var needed = Math.max(needHot, needTotal);
+    var share = state.failover === "none" || !capDramMB ? 1 : capDramMB / dramMB;
+    var needHot = activeSizeMB / (THR / 100) / share;
+    var needTotal = consPeakMB / (1 + ratio()) / share;
+    var raw = Math.max(needHot, needTotal);
+    var hosts = Math.max(1, hostCount || 1);
+    var build = buildable(raw / hosts);
+    var needed = build ? build.mb * hosts : raw;
     var capacity = dramMB * (1 + ratio());
+    var hotFits = activeSizeMB <= dramMB * share * THR / 100;
     return { dram: dramMB, nvme: nvmeMB || 0, active: activeSizeMB, consPeak: consPeakMB,
-      needed: needed, saving: Math.max(0, dramMB - needed),
+      share: share, hosts: hosts, raw: raw, build: build, needed: needed,
+      saving: Math.max(0, dramMB - needed),
       capacity: capacity,
-      // A cluster whose hot set already needs more than THR% of its DRAM cannot take a tier on
-      // this hardware at all, so there is no extra memory to hand out - only new DRAM helps.
-      headroom: activeSizeMB <= dramMB * THR / 100 ? Math.max(0, capacity - consPeakMB) : 0,
-      hotFits: activeSizeMB <= dramMB * THR / 100 };
+      // A cluster whose hot set already needs more than THR% of its surviving DRAM cannot take a
+      // tier on this hardware at all, so there is no extra memory to hand out - only new DRAM helps.
+      headroom: hotFits ? Math.max(0, capacity * share - consPeakMB) : 0,
+      hotFits: hotFits };
+  }
+  function buildLabel(z) {
+    return z && z.build ? num(z.build.n) + " \u00d7 " + num(z.build.gb) + " GB" : "\u2013";
   }
 
   // ---------- small-multiple chart ----------
@@ -1090,6 +1145,10 @@ footer a { color: var(--accent); }
       t("verdictBody", pct(actOverCons), szu(coldMB)) + (worth.length ? " " + worth.join(" ") : "")));
     var bound = clist.filter(function (c) { return c.dramFit[1] === "warning"; }).length;
     if (bound) body.appendChild(el("p", { class: "vn" }, t("verdictBound", num(bound), thr(THR))));
+    if (!bound) {
+      var afterFail = clist.filter(function (c) { return c.failFit[1] === "warning"; }).length;
+      if (afterFail) body.appendChild(el("p", { class: "vn" }, t("verdictAfterFail", num(afterFail), thr(THR))));
+    }
     box.appendChild(body);
   }
 
@@ -1203,10 +1262,8 @@ footer a { color: var(--accent); }
         a.n++;
       });
     });
-    var cp = $("clusterPanels"); cp.textContent = "";
     var clist = Object.keys(clusters).map(function (k) { return clusters[k]; }).filter(function (c) { return c.name !== "(standalone)"; });
-    if (!clist.length) cp.appendChild(el("div", { class: "empty" }, t("noClusters")));
-    clist.forEach(function (c) {           // the figures feed the candidates, the sizing and the banner
+    clist.forEach(function (c) {
       c.stretched = isStretched(c.name);
       var pts = Object.keys(c.t).map(Number).sort(function (a, b) { return a - b; }).map(function (ts) {
         var a = c.t[ts];
@@ -1255,67 +1312,31 @@ footer a { color: var(--accent); }
       c.candidate = candidateVerdict(c.activeOverCons);
       c.activeSizeMB = p95(activeP95);
       c.consPeakMB = maxOf(consPeaks);
-      c.sizing = sizing(c.dram, c.nvme, c.activeSizeMB, c.consPeakMB);
+      c.sizing = sizing(c.dram, c.nvme, c.activeSizeMB, c.consPeakMB, c.hosts.length, c.capDram);
       c.dramFit = dramVerdict(c.dram ? (c.activeSizeMB == null ? null : c.activeSizeMB / c.dram * 100) : null);
+      // The tiering-specific failure question: after a host or a site is gone, the same hot set
+      // has to fit the DRAM that is left. Consumed memory fitting is ordinary HA admission control.
+      c.naturalCap = failoverCapacity(naturallyStretched(c.name), c.dram, c.big, c.hosts.length);
+      c.hotAfterFail = c.naturalCap && c.activeSizeMB != null ? c.activeSizeMB / c.naturalCap * 100 : null;
+      c.failFit = dramVerdict(c.hotAfterFail);
     });
-    var anyStretched = clist.some(function (c) { return c.stretched; });
-    $("clusterHint").textContent = (anyStretched ? t("foHintStretched") : "") +
-      (clist.some(function (c) { return !c.stretched; }) ? t("foHintN1") : "") + t("foHintTail", metricLabel());
-    var clusterTop = 100;
-    clist.forEach(function (c) { c.pts.forEach(function (p) { if (p.consPct != null && p.consPct > clusterTop) clusterTop = p.consPct; }); });
-    clusterTop = Math.min(250, Math.ceil(clusterTop / 50) * 50);
-    clist.sort(function (a, b) { return (b.p95 || 0) - (a.p95 || 0); });
-    if (advanced()) clist.forEach(function (c) {   // charts only: simple mode never draws them
-      var model = c.stretched ? t("mStretched") : c.hosts.length > 1 ? t("mN1") : t("mOne");
-      var sub = c.hosts.length + " × " + t("ttHosts") + " • " + szu(c.dram) + " DRAM • " + model + " • P95 " + pct(c.p95);
-      panelChart(cp, c.name, sub, verdict(c.p95, c.maxv), c.pts, axisStart, tMax, function (p) {
-        return [[t("ttSurvivingDram", metricLabel()), pct(p.v)], [t("ttMax"), pct(p.max)], [t("ttActiveSum"), szu(p.activeMB)],
-          [c.stretched ? t("ttDramOneSite") : t("ttDramNoLargest"), szu(p.cap)],
-          [t("ttConsSurviving"), pct(p.consPct)],
-          [t("fActCons"), p.consMB ? pct(p.avgActiveMB / p.consMB * 100) : "–"],
-          [t("ttHostsWithData"), num(p.n)]];
-      }, function (p) { return p.consPct; }, clusterTop);
-    });
-    if (advanced()) renderTable($("clusterTable"), [
-      { key: "name", label: t("cCluster") },
-      { key: "actCons", label: t("cCandidate") + " – " + t("fActCons"), num: true, fmt: pct, title: t("ttActConsCol") },
-      { key: "candidateLabel", label: t("fVerdict"), render: function (td, r) { badgeCell(td, r.candidate[0], r.candidate[1]); } },
-      { key: "coldMB", label: t("thColdDram", U.name), num: true, fmt: sz, title: t("ttColdCol") },
-      { key: "nvmeUsedMB", label: t("thOnNvme", U.name), num: true, fmt: function (v) { return v ? sz(v) : "–"; }, title: t("ttOnNvmeCol") },
-      { key: "dramFitLabel", label: t("cTiering"), render: function (td, r) { badgeCell(td, r.dramFit[0], r.dramFit[1]); } },
-      { key: "model", label: t("cModel") },
-      { key: "hosts", label: t("cHosts"), num: true, fmt: num },
-      { key: "dram", label: t("cDram", U.name), num: true, fmt: sz },
-      { key: "capDram", label: t("cSurvDram", U.name), num: true, fmt: sz, title: t("ttSurvDram") },
-      { key: "activePct", label: t("cActive"), num: true, title: t("ttActiveSurv"), render: function (td, r) { barCell(td, r.activePct, THR); } },
-      { key: "tieringLabel", label: t("fVerdict") + " (DRAM)", render: function (td, r) { badgeCell(td, r.tiering[0], r.tiering[1]); } },
-      { key: "consPct", label: t("cConsumed"), num: true, title: t("ttConsSurvCol"), render: function (td, r) { barCell(td, r.consPct, null); } },
-      { key: "consMaxPct", label: t("cConsMax"), num: true, fmt: pct },
-      { key: "capacityLabel", label: t("cCapacityLabel"), render: function (td, r) { badgeCell(td, r.capacity[0], r.capacity[1]); } }
-    ], sortRows(clist.map(function (c) {
-      var tv = verdict(c.p95, c.maxv), fv = failoverVerdict(c.consP95);
-      return { name: c.name, model: c.stretched ? t("mStretched") : c.hosts.length > 1 ? t("mN1") : t("mOne"),
-        hosts: c.hosts.length, dram: c.dram, capDram: c.capDram,
-        activePct: c.p95, tiering: tv, tieringLabel: tv[0], consPct: c.consP95, consMaxPct: c.consMax, capacity: fv, capacityLabel: fv[0],
-        actCons: c.activeOverCons, coldMB: c.coldMB, nvmeUsedMB: c.nvmeUsedMB, candidate: c.candidate, candidateLabel: c.candidate[0],
-        dramFit: c.dramFit, dramFitLabel: c.dramFit[0] };
-    }), state.clusterSort), state.clusterSort, render);
+    var anyStretched = clist.some(function (c) { return naturallyStretched(c.name); });
     if (clist.length) {
       var candCount = clist.filter(function (c) { return c.candidate[1] === "good"; }).length;
       kpi(t("kCandidates"), num(candCount) + " / " + num(clist.length), t("kCandidatesSub", thr(CAND)), true);
       var savingTotal = 0, headroomTotal = 0, sizedAny = false;
       clist.forEach(function (c) { if (c.sizing) { savingTotal += c.sizing.saving; headroomTotal += c.sizing.headroom; sizedAny = true; } });
-      kpi(t("kSaving"), sizedAny ? szu(savingTotal) : "–", t("kSavingSub", tierLabel(), thr(THR)));
-      kpi(t("kHeadroom"), sizedAny ? szu(headroomTotal) : "–", t("kHeadroomSub"));
-      var fitCount = clist.filter(function (c) { return c.consP95 != null && c.consP95 <= 100; }).length;
-      kpi(t("kSurvive"), num(fitCount) + " / " + num(clist.length),
-        t("kSurviveSub", anyStretched ? t("kSurviveStretched") : t("kSurviveN1")), true);
+      kpi(t("kSaving"), sizedAny ? szu(savingTotal) : "\u2013", t("kSavingSub", tierLabel(), thr(THR)));
+      kpi(t("kHeadroom"), sizedAny ? szu(headroomTotal) : "\u2013", t("kHeadroomSub"));
+      var stillFits = clist.filter(function (c) { return c.failFit[1] === "good"; }).length;
+      kpi(t("kHotAfterFail"), num(stillFits) + " / " + num(clist.length),
+        t("kHotAfterFailSub", anyStretched ? t("kSurviveStretched") : t("kSurviveN1"), thr(THR)), true);
     }
 
-    var savingTotal2 = 0, headroomTotal2 = 0;
-    clist.forEach(function (c) { if (c.sizing) { savingTotal2 += c.sizing.saving; headroomTotal2 += c.sizing.headroom; } });
+    var bannerSaving = 0, bannerHeadroom = 0;
+    clist.forEach(function (c) { if (c.sizing) { bannerSaving += c.sizing.saving; bannerHeadroom += c.sizing.headroom; } });
     renderVerdict(clist, fCons ? fActOnCons / fCons * 100 : null, coldStamps.length ? coldSum / coldStamps.length : null,
-      savingTotal2, headroomTotal2);
+      bannerSaving, bannerHeadroom);
     renderCandidates(clist);
     renderSizing(clist);
 
@@ -1376,7 +1397,16 @@ footer a { color: var(--accent); }
         plot.appendChild(track);
       });
       var gd = el("span", { class: "g dram" }); gd.style.left = x(100) + "%"; plot.appendChild(gd);
-      var gt = el("span", { class: "g thr" }); gt.style.left = x(M.thresholdPct) + "%"; plot.appendChild(gt);
+      var gt = el("span", { class: "g thr" }); gt.style.left = x(THR) + "%"; plot.appendChild(gt);
+      // Where DRAM would end after tiering. The active bar has to stay well under it - that is the
+      // whole decision in one glance: bar shorter than the line means the hot set still fits.
+      if (c.sizing && c.dram) {
+        var tierPct = c.sizing.needed / c.dram * 100;
+        var gn = el("span", { class: "g tierline" });
+        gn.style.left = x(tierPct) + "%";
+        gn.title = t("ttTierLine", szu(c.sizing.needed), buildLabel(c.sizing));
+        plot.appendChild(gn);
+      }
       if (ri === 0) plot.appendChild(scaleAxis());
       (function (c) {
         var show = function (e) {
@@ -1390,6 +1420,7 @@ footer a { color: var(--accent); }
             [t("ttConsP95Dram"), t("ttOfDram", pct(c.candCons))],
             [t("ttConfDram"), t("ttOfDram", pct(c.candConfigured))],
             [t("ttClusterDram"), szu(c.dram)],
+            [t("cDramNeeded"), c.sizing ? szu(c.sizing.needed) + " (" + buildLabel(c.sizing) + ")" : "\u2013"],
             [t("ttHosts"), num(c.hosts.length)]]);
         };
         plot.addEventListener("pointermove", show); plot.addEventListener("focus", show);
@@ -1422,11 +1453,13 @@ footer a { color: var(--accent); }
   // ---------- sizing ----------
   function renderSizing(clist) {
     $("sizingHint").textContent = t("sizingHint", tierLabel(), thr(THR));
-    $("sizingNote").textContent = t("sizingNote");
+    $("sizingNote").textContent = t("sizingNote") + " " + t("sizingDimms", DIMM_GB.join(", ")) +
+      (state.failover === "none" ? "" : " " + t("sizingFailure"));
     var rows = clist.filter(function (c) { return c.sizing; }).map(function (c) {
       var z = c.sizing;
       return { name: c.name, dram: z.dram, nvme: z.nvme, active: z.active, consPeak: z.consPeak,
-        needed: z.needed, saving: z.saving, capacity: z.capacity, headroom: z.headroom };
+        needed: z.needed, saving: z.saving, capacity: z.capacity, headroom: z.headroom,
+        perHost: z.build ? z.build.mb : z.raw / z.hosts, build: buildLabel(z), hosts: z.hosts };
     });
     var cols = [
       { key: "name", label: t("cCluster") },
@@ -1435,6 +1468,8 @@ footer a { color: var(--accent); }
       { key: "active", label: t("cActiveP95") + " " + U.name, num: true, fmt: sz, adv: true },
       { key: "consPeak", label: t("cConsPeak") + " " + U.name, num: true, fmt: sz, adv: true },
       { key: "needed", label: t("cDramNeeded") + " " + U.name, num: true, fmt: sz, title: t("ttDramNeeded", thr(THR), thr(ratio())) },
+      { key: "perHost", label: t("cPerHost") + " GB", num: true, fmt: gb1, title: t("ttPerHost") },
+      { key: "build", label: t("cBuild"), title: t("ttBuild") },
       { key: "saving", label: t("cDramSaving") + " " + U.name, num: true, fmt: sz, title: t("ttDramSaving") },
       { key: "capacity", label: t("cCapacity") + " " + U.name, num: true, fmt: sz, title: t("ttCapacity", thr(ratio())), adv: true },
       { key: "headroom", label: t("cHeadroom") + " " + U.name, num: true, fmt: sz, title: t("ttHeadroom") }
@@ -1458,11 +1493,20 @@ footer a { color: var(--accent); }
 
   // ---------- heatmap ----------
   function renderHeat(hs) {
-    $("heatHint").textContent = t("heatHint");
+    $("heatHint").textContent = t("heatHint", thr(CAND));
     var sum = [], cnt = [];
     for (var i = 0; i < 168; i++) { sum.push(0); cnt.push(0); }
+    // Active over consumed, the same metric the decision is made on: this shows when the working
+    // set heats up, which is when a tier is under the most pressure. Against DRAM it would mostly
+    // show when the hosts are busy, which is a different question.
     var byTs = {};
-    hs.forEach(function (x) { x.st.pts.forEach(function (p) { var b = byTs[p.t] || (byTs[p.t] = [0, 0]); b[0] += p.avg * p.dram / 100; b[1] += p.dram; }); });
+    hs.forEach(function (x) {
+      x.st.pts.forEach(function (p) {
+        if (!p.consMB) return;
+        var b = byTs[p.t] || (byTs[p.t] = [0, 0]);
+        b[0] += p.activeAvgMB; b[1] += p.consMB;
+      });
+    });
     var span = Math.max(1, M.bucketHours || 1);
     Object.keys(byTs).forEach(function (k) {
       var base = +k, v = byTs[k][0] / byTs[k][1] * 100;
@@ -1473,7 +1517,8 @@ footer a { color: var(--accent); }
         sum[slot] += v; cnt[slot]++;
       }
     });
-    var bins = [10, 20, 30, 40, 50];
+    // Bins straddle the candidate threshold, so the colour flips exactly where the verdict does.
+    var bins = [CAND * 0.25, CAND * 0.5, CAND * 0.75, CAND, CAND * 1.5];
     var heat = $("heat"); heat.textContent = "";
     heat.appendChild(el("div"));
     for (var hh = 0; hh < 24; hh++) heat.appendChild(el("div", { class: "cl" }, String(hh)));
@@ -1498,7 +1543,9 @@ footer a { color: var(--accent); }
       }
     });
     var lg = $("heatLegend"); lg.textContent = "";
-    ["< 10%", "10–20%", "20–30%", "30–40%", "40–50%", "≥ 50%"].forEach(function (label, i) {
+    var edge = bins.map(function (b) { return pct(b); });
+    ["< " + edge[0], edge[0] + "–" + edge[1], edge[1] + "–" + edge[2],
+     edge[2] + "–" + edge[3], edge[3] + "–" + edge[4], "≥ " + edge[4]].forEach(function (label, i) {
       var sw = el("i"); sw.style.background = "var(--heat-" + i + ")"; lg.appendChild(sw); lg.appendChild(el("span", null, label));
     });
   }

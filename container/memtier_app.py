@@ -340,6 +340,7 @@ def latest_collection(data_dir, threshold_pct):  # noqa: C901
         "vmsTotal": total("VMsTotal"),
         "durationSec": total("DurationSec"),
         "peak": peak,
+        "tierCounters": sorted(set(c for r in latest for c in (r.get("TierCounters") or "").split(";") if c)),
         "activeOverConsumedPct": round(active_sum * 100.0 / cons_sum, 1) if cons_sum else None,
         "coldInDramMB": cold_sum if cons_sum else None,
         "thresholdPct": threshold_pct,
@@ -347,7 +348,8 @@ def latest_collection(data_dir, threshold_pct):  # noqa: C901
                       "hostsConnected": mt.as_int(r.get("HostsConnected")), "vmsOn": mt.as_int(r.get("VMsOn")),
                       "vmsWithoutStats": mt.as_int(r.get("VMsWithoutStats")),
                       "hostsWithoutStats": mt.as_int(r.get("HostsWithoutStats")),
-                      "durationSec": mt.as_int(r.get("DurationSec")), "message": r.get("Message") or ""} for r in latest],
+                      "durationSec": mt.as_int(r.get("DurationSec")), "message": r.get("Message") or "",
+                      "tierCounters": [c for c in (r.get("TierCounters") or "").split(";") if c]} for r in latest],
     }
 
 
@@ -400,7 +402,10 @@ class EntityPublisher(object):
         return [
             ("sensor.%s_status" % p, status, {
                 "friendly_name": "Memory tiering collector status", "icon": "mdi:memory",
-                "message": message, "vcenters": [v["vcenter"] for v in (latest or {}).get("vcenters", [])]}),
+                "message": message, "vcenters": [v["vcenter"] for v in (latest or {}).get("vcenters", [])],
+                # Which per-tier performance counters this vCenter publishes, if any. Tier sizes
+                # are always available; current tier usage depends on these existing.
+                "tier_counters": (latest or {}).get("tierCounters") or []}),
             ("sensor.%s_last_collection" % p, (latest or {}).get("timestamp") or "unknown", {
                 "friendly_name": "Memory tiering last collection", "device_class": "timestamp", "icon": "mdi:clock-check-outline"}),
             ("sensor.%s_hosts" % p, (latest or {}).get("hostsConnected", "unknown"), {
