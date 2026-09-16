@@ -57,6 +57,8 @@ A single look at vCenter won't tell you. Active memory swings with backups, batc
 * 🧰 **Two editions, same result:** PowerShell (PowerCLI) or Python (no extra packages). Both write the same CSV files and build the same report.
 * 🏠 **Easy install for the homelab:** a Home Assistant app or a Docker container runs the Python edition on schedule and serves the report, no cron or scheduled task needed.
 * 🌍 **English and German**, switchable in the report and in the panel.
+* 🎚️ **Simple by default:** one verdict, four numbers. Switch to *Everything* when you want the charts, the heatmap and the per-VM tables.
+* 🧪 **Simulate the tier size:** 50%, 100% (1:1), 200% or 400% of DRAM, and watch the sizing move.
 * ⚡ **Quick snapshot:** want a first impression right now? The snapshot script looks at the last hour, no scheduling needed.
 
 ## ✅ Supported environments
@@ -174,6 +176,23 @@ The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmwa
 * **Hosts and VMs tables:** searchable, sortable, exportable to CSV.
 * **Collector runs:** gaps and failed runs are visible, nothing fails silently.
 * **Language:** English and German, switchable in the report itself (the choice is remembered per browser).
+
+### Simple or everything
+
+The report opens in **Simple** view: a one-line verdict, four figures and the two tables that answer
+"should we tier, and what do we get". Switch to **Everything** for the host and cluster charts,
+failover headroom, the weekday × hour heatmap and the per-host and per-VM tables. The choice is
+remembered per browser.
+
+### Simulating the tier size
+
+The **NVMe tier** switch sizes the tier as a percentage of DRAM, the way it is configured on the
+host — **100% is the 1:1 default**, and 50%, 200% and 400% are there to compare. It changes the
+sizing only. Whether a cluster is a candidate is active over consumed memory, which does not depend
+on the ratio at all.
+
+Note that `DRAM saved` stops improving past a point: once the hot-set limit (active P95 ÷ 50%)
+becomes the binding constraint, a bigger tier adds capacity but no further DRAM saving.
 
 ## 🧮 The arithmetic, on one page
 

@@ -24,6 +24,12 @@ jobs:
         with:
           python-version: "3.14"
 
+      # Only for the headless render test, which executes the report's own JavaScript
+      # against a DOM shim. Nothing at runtime needs node.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
       - name: Compile
         run: python -m py_compile python/memtier.py container/memtier_app.py examples/generate-mock-data.py
 

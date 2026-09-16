@@ -164,6 +164,12 @@ tbody tr:hover { background: var(--surface-2); }
 #tip .row span { color: var(--ink-2); }
 #tip .row b { font-variant-numeric: tabular-nums; }
 details > summary { cursor: pointer; font-weight: 600; }
+.verdict { display: flex; gap: 16px; align-items: flex-start; border-left: 4px solid var(--c, var(--muted)); }
+.verdict.good { --c: var(--good); } .verdict.warning { --c: var(--warning); }
+.verdict.serious { --c: var(--serious); } .verdict.critical { --c: var(--critical); }
+.verdict .vh { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
+.verdict .vb { color: var(--ink-2); margin: 0; max-width: 78ch; }
+.verdict .vn { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 .ascii { overflow-x: auto; background: var(--surface-2); border-radius: 8px; padding: 12px 14px; margin: 10px 0 0; }
 .ascii pre { margin: 0; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); }
 .defs { margin: 12px 0 0; display: grid; gap: 6px; }
@@ -201,14 +207,18 @@ footer a { color: var(--accent); }
 
   <main id="main">
     <div class="card filters" role="region" aria-label="Filters">
+      <label><span data-i18n="fMode">View</span><span class="seg" id="mode"></span></label>
+      <label><span data-i18n="fTier">NVMe tier</span><span class="seg" id="tier" title=""></span></label>
       <label><span data-i18n="fRange">Time range</span><span class="seg" id="range"></span></label>
       <label><span data-i18n="fVcenter">vCenter</span><select id="fVc"></select></label>
       <label><span data-i18n="fCluster">Cluster</span><select id="fCluster"></select></label>
-      <label><span data-i18n="fMetric">Host metric</span><span class="seg" id="metric"></span></label>
-      <label><span data-i18n="fFailover">Cluster failover</span><select id="fFailover"></select></label>
+      <label data-adv><span data-i18n="fMetric">Host metric</span><span class="seg" id="metric"></span></label>
+      <label data-adv><span data-i18n="fFailover">Cluster failover</span><select id="fFailover"></select></label>
       <label><span data-i18n="fUnits">Units</span><span class="seg" id="units"></span></label>
       <label><span data-i18n="fLang">Language</span><select id="fLang"></select></label>
     </div>
+
+    <div class="card verdict" id="verdict" hidden></div>
 
     <section class="kpis" id="kpis" aria-label="Key figures"></section>
 
@@ -232,7 +242,7 @@ footer a { color: var(--accent); }
       <p class="note" id="sizingNote"></p>
     </section>
 
-    <section class="card">
+    <section class="card" data-adv>
       <details id="mathBox">
         <summary data-i18n="secMath">How these numbers are calculated</summary>
         <p class="hint" id="mathHint"></p>
@@ -241,7 +251,7 @@ footer a { color: var(--accent); }
       </details>
     </section>
 
-    <section class="card">
+    <section class="card" data-adv>
       <h2 data-i18n="secHosts">Host active vs. consumed memory</h2>
       <p class="hint" id="hostHint"></p>
       <div class="legend">
@@ -253,7 +263,7 @@ footer a { color: var(--accent); }
       <div class="panels" id="hostPanels"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-adv>
       <h2 data-i18n="secFailover">Cluster failover headroom</h2>
       <p class="hint" id="clusterHint"></p>
       <div class="legend">
@@ -266,20 +276,20 @@ footer a { color: var(--accent); }
       <div class="tablewrap" style="margin-top:14px"><table id="clusterTable"></table></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-adv>
       <h2 data-i18n="secHeat">When is memory active? (weekday × hour)</h2>
       <p class="hint" id="heatHint"></p>
       <div class="tablewrap"><div class="heat" id="heat" role="grid" aria-label="Active memory heatmap"></div></div>
       <div class="heatlegend" id="heatLegend"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-adv>
       <h2 data-i18n="secHostTable">Hosts</h2>
       <p class="hint" id="hostTableHint"></p>
       <div class="tablewrap"><table id="hostTable"></table></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-adv>
       <h2 data-i18n="secVms">Virtual machines</h2>
       <p class="hint" id="vmHint"></p>
       <div class="toolbar">
@@ -295,7 +305,7 @@ footer a { color: var(--accent); }
       <div class="pager" id="vmPager"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-adv>
       <details>
         <summary data-i18n="secRuns">Collector runs</summary>
         <p class="hint" id="runHint"></p>
@@ -332,16 +342,30 @@ footer a { color: var(--accent); }
   // Defaults keep a report built by an older builder readable.
   var CAND = M.candidatePct == null ? 40 : M.candidatePct;       // decision: active / consumed
   var THR = M.thresholdPct == null ? 50 : M.thresholdPct;        // feasibility: active / DRAM
-  var RATIO = M.tierRatio == null ? 1 : M.tierRatio;             // NVMe per unit of DRAM used for sizing
+  var TIER_CHOICES = [50, 100, 200, 400];                        // NVMe tier as % of DRAM; 100 = 1:1
+  var CONFIG_RATIO = M.tierRatio == null ? 1 : M.tierRatio;      // the ratio the report was built with
+  // The simulated tier size is a view setting, not a stored one: it moves the sizing numbers only,
+  // never the candidate verdict, which is active over consumed memory and independent of the ratio.
+  function ratio() { return state.tierPct / 100; }
   var INTERVAL = M.intervalMinutes || 60;
 
-  var state = { range: "all", vc: "", cluster: "", metric: "p95", units: "auto", lang: "en", vmSort: { key: "p95", dir: -1 }, vmPage: 0, hostSort: { key: "actCons", dir: 1 }, runSort: { key: "ts", dir: -1 }, clusterSort: { key: "actCons", dir: 1 }, sizingSort: { key: "saving", dir: -1 } };
+  var state = { mode: "simple", tierPct: 100, range: "all", vc: "", cluster: "", metric: "p95", units: "auto", lang: "en", vmSort: { key: "p95", dir: -1 }, vmPage: 0, hostSort: { key: "actCons", dir: 1 }, runSort: { key: "ts", dir: -1 }, clusterSort: { key: "actCons", dir: 1 }, sizingSort: { key: "saving", dir: -1 } };
   // ---------- translations ----------
   // Same shape as the Home Assistant panel: one flat dictionary per language,
   // English is the fallback for any key a translation has not caught up with.
   // {0}, {1} ... are replaced with the arguments of t().
   var I18N = {
     en: {
+      fMode: "View", fTier: "NVMe tier", mSimple: "Simple", mExpert: "Everything",
+      verdictHead: "{0} – {1} of the memory your hosts back is cold",
+      verdictBody: "Active memory is {0} of consumed memory, so about {1} sits in DRAM without being touched. " +
+        "That is what an NVMe tier moves out of DRAM.",
+      verdictSaving: "Sized fresh with a {1} NVMe tier, you would need {0} less DRAM.",
+      verdictHeadroom: "On today's DRAM a tier would free up {0} of extra memory.",
+      verdictBound: "Clusters whose hot set already needs more than {1}% of their DRAM, so no tier fits on that hardware " +
+        "as it stands: {0}. Switch to Everything to see which.",
+      tierHint: "NVMe tier as % of DRAM, the way it is configured on the host: 100% is the 1:1 default. " +
+        "It changes the sizing only - whether a cluster is a candidate does not depend on it.",
       fRange: "Time range", fVcenter: "vCenter", fCluster: "Cluster", fMetric: "Host metric",
       fFailover: "Cluster failover", fUnits: "Units", fLang: "Language",
       all: "All", rangeAll: "All ({0} d)", rangeHours: "24 h", rangeDays: "{0} d",
@@ -351,7 +375,7 @@ footer a { color: var(--accent); }
       noData: "No data in this report. Run the collector for at least one interval, then rebuild the report.",
       subtitle: "vCenter: {0} • Data {1} – {2} • Generated {3}", support: "Support: {4}",
       footer: "Built by {0} • bucket {1} h • collection interval {2} min • candidate at or below {3}% active of consumed, " +
-        "feasibility {4}% of DRAM, sizing ratio 1:{5} • VM cold < {6}%, hot ≥ {7}% of configured memory. " +
+        "feasibility {4}% of DRAM, NVMe tier {5} of DRAM • VM cold < {6}%, hot ≥ {7}% of configured memory. " +
         "Active memory is the ESXi estimate of recently touched guest pages (20 s real-time samples).",
       disclaimer: "Community project, not affiliated with or endorsed by VMware or Broadcom. By",
 
@@ -363,7 +387,7 @@ footer a { color: var(--accent); }
       kActConf: "Active vs. configured", kActConfSub: "of the memory assigned to powered-on VMs",
       kCandidates: "Tiering candidates", kCandidatesSub: "clusters at or below {0}% active of consumed",
       kCold: "Cold memory in DRAM", kColdSub: "consumed minus active, still held in DRAM - what a tier moves to NVMe",
-      kSaving: "DRAM you would not need", kSavingSub: "at 1:{0} and a {1}% hot-set limit, on today's workload",
+      kSaving: "DRAM you would not need", kSavingSub: "with a {0} NVMe tier and a {1}% hot-set limit, on today's workload",
       kHeadroom: "Extra memory a tier would free up", kHeadroomSub: "additional consumed memory today's DRAM could back",
       kActDram: "Active memory ({0})", kActDramSub: "of DRAM - feasibility, not benefit",
       kAboveGuidance: "Hosts above the hot-set limit", kAboveGuidanceSub: "P95 active > {0}% of DRAM",
@@ -393,8 +417,8 @@ footer a { color: var(--accent); }
       // sizing
       secSizing: "Sizing: what memory tiering would buy you",
       sizingHint: "Two questions, one table. Buying new hardware: how little DRAM would carry today's workload with an NVMe " +
-        "tier? Extending what you have: how much more memory could the DRAM you own back once a tier is added? Both assume a " +
-        "1:{0} DRAM:NVMe ratio and keep the hot working set at or below {1}% of DRAM.",
+        "tier? Extending what you have: how much more memory could the DRAM you own back once a tier is added? Both assume an " +
+        "NVMe tier of {0} of DRAM and keep the hot working set at or below {1}% of DRAM.",
       sizingNote: "Sizing uses the P95 of active memory and the peak of consumed memory over the selected range, per cluster. " +
         "Add your own safety margin and check the failover table before ordering: the numbers describe today's workload, not growth.",
       cDramToday: "DRAM today", cNvmeToday: "NVMe tier today", cActiveP95: "Active P95", cConsPeak: "Consumed peak",
@@ -495,6 +519,16 @@ footer a { color: var(--accent); }
       rOk: "ok", rPartial: "partial", rFailed: "failed"
     },
     de: {
+      fMode: "Ansicht", fTier: "NVMe-Tier", mSimple: "Einfach", mExpert: "Alles",
+      verdictHead: "{0} – {1} des von den Hosts hinterlegten Speichers ist kalt",
+      verdictBody: "Der aktive Speicher beträgt {0} des belegten Speichers, rund {1} liegen also im DRAM, ohne " +
+        "berührt zu werden. Genau das verschiebt ein NVMe-Tier aus dem DRAM.",
+      verdictSaving: "Neu dimensioniert mit einem NVMe-Tier von {1} bräuchten Sie {0} weniger DRAM.",
+      verdictHeadroom: "Mit dem heutigen DRAM würde ein Tier {0} zusätzlichen Speicher frei machen.",
+      verdictBound: "Cluster, deren heißer Anteil schon mehr als {1} % ihres DRAM braucht, wo also auf der vorhandenen " +
+        "Hardware kein Tier passt: {0}. Unter „Alles“ ist zu sehen, welche.",
+      tierHint: "NVMe-Tier als % des DRAM, so wie es am Host konfiguriert wird: 100 % ist die Voreinstellung 1:1. " +
+        "Es ändert nur das Sizing – ob ein Cluster Kandidat ist, hängt nicht davon ab.",
       fRange: "Zeitraum", fVcenter: "vCenter", fCluster: "Cluster", fMetric: "Host-Metrik",
       fFailover: "Cluster-Ausfall", fUnits: "Einheiten", fLang: "Sprache",
       all: "Alle", rangeAll: "Alles ({0} T)", rangeHours: "24 Std.", rangeDays: "{0} T",
@@ -505,7 +539,7 @@ footer a { color: var(--accent); }
       noData: "Keine Daten in diesem Bericht. Den Sammler mindestens ein Intervall laufen lassen und den Bericht neu bauen.",
       subtitle: "vCenter: {0} • Daten {1} – {2} • Erstellt {3}", support: "Support: {4}",
       footer: "Erstellt von {0} • Bucket {1} Std. • Sammelintervall {2} Min. • Kandidat bei höchstens {3} % aktiv von " +
-        "belegt, Machbarkeit {4} % des DRAM, Sizing-Verhältnis 1:{5} • VM kalt < {6} %, heiß ≥ {7} % des konfigurierten " +
+        "belegt, Machbarkeit {4} % des DRAM, NVMe-Tier {5} des DRAM • VM kalt < {6} %, heiß ≥ {7} % des konfigurierten " +
         "Speichers. Aktiver Speicher ist die ESXi-Schätzung kürzlich berührter Gastseiten (20-Sekunden-Messwerte).",
       disclaimer: "Community-Projekt, weder mit VMware noch Broadcom verbunden oder von ihnen unterstützt. Von",
 
@@ -516,7 +550,7 @@ footer a { color: var(--accent); }
       kActConf: "Aktiv zu konfiguriert", kActConfSub: "des den eingeschalteten VMs zugewiesenen Speichers",
       kCandidates: "Tiering-Kandidaten", kCandidatesSub: "Cluster mit höchstens {0} % aktiv von belegt",
       kCold: "Kalter Speicher im DRAM", kColdSub: "belegt minus aktiv, noch im DRAM - genau das verschiebt ein Tier auf NVMe",
-      kSaving: "Nicht benötigtes DRAM", kSavingSub: "bei 1:{0} und {1} % Grenze für den heißen Anteil, auf heutiger Last",
+      kSaving: "Nicht benötigtes DRAM", kSavingSub: "mit einem NVMe-Tier von {0} und {1} % Grenze für den heißen Anteil, auf heutiger Last",
       kHeadroom: "Zusätzlicher Speicher durch ein Tier", kHeadroomSub: "zusätzlich belegbarer Speicher mit dem heutigen DRAM",
       kActDram: "Aktiver Speicher ({0})", kActDramSub: "des DRAM - Machbarkeit, nicht Nutzen",
       kAboveGuidance: "Hosts über der Grenze", kAboveGuidanceSub: "P95 aktiv > {0} % des DRAM",
@@ -545,7 +579,7 @@ footer a { color: var(--accent); }
       secSizing: "Sizing: was Memory Tiering bringt",
       sizingHint: "Zwei Fragen, eine Tabelle. Neue Hardware: Mit wie wenig DRAM trägt ein NVMe-Tier die heutige Last? " +
         "Bestand erweitern: Wie viel mehr Speicher kann das vorhandene DRAM mit einem Tier hinterlegen? Beides mit einem " +
-        "Verhältnis DRAM:NVMe von 1:{0} und dem heißen Anteil bei höchstens {1} % des DRAM.",
+        "NVMe-Tier von {0} des DRAM und dem heißen Anteil bei höchstens {1} % des DRAM.",
       sizingNote: "Das Sizing nutzt den P95 des aktiven und den Spitzenwert des belegten Speichers im gewählten Zeitraum, je " +
         "Cluster. Vor einer Bestellung eigenen Sicherheitsaufschlag einplanen und die Ausfalltabelle prüfen: Die Zahlen " +
         "beschreiben die heutige Last, kein Wachstum.",
@@ -744,13 +778,20 @@ footer a { color: var(--accent); }
       var b = el("button", { type: "button", "aria-pressed": String(state[key] === o[0]) }, o[1]);
       b.addEventListener("click", function () {
         state[key] = o[0]; state.vmPage = 0;
+        if (key === "mode" || key === "tierPct") store("memtier." + key, String(o[0]));
         Array.prototype.forEach.call(container.children, function (c) { c.setAttribute("aria-pressed", String(c === b)); });
         render();
       });
       container.appendChild(b);
     });
   }
+  function tierLabel() { return num(state.tierPct) + (state.lang === "de" ? "\u00a0%" : "%"); }
+  function advanced() { return state.mode === "expert"; }
   function buildSegments() {
+    segmented($("mode"), [["simple", t("mSimple")], ["expert", t("mExpert")]], "mode");
+    segmented($("tier"), TIER_CHOICES.map(function (p) {
+      return [p, p + "%" + (p === 100 ? " (1:1)" : "")];
+    }), "tierPct");
     segmented($("range"), rangeOptions(), "range");
     segmented($("metric"), [["avg", t("mAvg")], ["p95", t("mP95")], ["max", t("mMax")]], "metric");
     segmented($("units"), [["auto", t("uAuto")], ["gb", "GB"], ["tb", "TB"]], "units");
@@ -832,12 +873,13 @@ footer a { color: var(--accent); }
     $("subtitle").textContent = t("subtitle", M.vcenters.join(", ") || "–", dt(tMin), dt(tMax),
       dt(Date.parse(M.generatedUtc) / 1000)) + (M.support ? " • " + t("support", "", "", "", M.support) : "");
     $("lgThr").textContent = $("lgThr2").textContent = $("lgThr0").textContent = t("lgGuidance", thr(THR));
-    $("footer").textContent = t("footer", M.builder, num(M.bucketHours), num(INTERVAL), thr(CAND), thr(THR), thr(RATIO),
+    $("footer").textContent = t("footer", M.builder, num(M.bucketHours), num(INTERVAL), thr(CAND), thr(THR), tierLabel(),
       thr(M.coldPct), thr(M.hotPct));
     var q = $("vmSearch");
     q.setAttribute("placeholder", t("vmSearch"));
     q.setAttribute("aria-label", t("vmSearchAria"));
     buildSegments();
+    $("tier").title = t("tierHint");
     refreshVcenters();
     refreshClusters();
     refreshFailover();
@@ -845,6 +887,10 @@ footer a { color: var(--accent); }
   }
   LANGS.forEach(function (l) { $("fLang").appendChild(el("option", { value: l[0] }, l[1])); });
   state.lang = store("memtier.lang") || (I18N[M.lang] ? M.lang : "en");
+  if (store("memtier.mode") === "expert") state.mode = "expert";
+  // The configured ratio is the starting point; the switch simulates the others.
+  state.tierPct = +(store("memtier.tierPct") || 0) || Math.round(CONFIG_RATIO * 100);
+  if (TIER_CHOICES.indexOf(state.tierPct) < 0) state.tierPct = 100;
   $("fLang").addEventListener("change", function () {
     state.lang = this.value; store("memtier.lang", state.lang);
     applyLanguage(); render();
@@ -909,14 +955,14 @@ footer a { color: var(--accent); }
   // ---------- sizing ----------
   // Two constraints decide how much DRAM a workload needs once a tier is in play:
   //   1. the hot working set must stay at or below THR% of DRAM      -> DRAM >= activeP95 / (THR/100)
-  //   2. total memory is DRAM + NVMe, and NVMe is at most RATIO x DRAM -> DRAM >= consumedPeak / (1 + RATIO)
+  //   2. total memory is DRAM + NVMe, and NVMe is at most ratio x DRAM -> DRAM >= consumedPeak / (1 + ratio)
   // The larger of the two wins. Everything above it is DRAM that would not have to be bought again.
   function sizing(dramMB, nvmeMB, activeSizeMB, consPeakMB) {
     if (!dramMB || activeSizeMB == null || consPeakMB == null) return null;
     var needHot = activeSizeMB / (THR / 100);
-    var needTotal = consPeakMB / (1 + RATIO);
+    var needTotal = consPeakMB / (1 + ratio());
     var needed = Math.max(needHot, needTotal);
-    var capacity = dramMB * (1 + RATIO);
+    var capacity = dramMB * (1 + ratio());
     return { dram: dramMB, nvme: nvmeMB || 0, active: activeSizeMB, consPeak: consPeakMB,
       needed: needed, saving: Math.max(0, dramMB - needed),
       capacity: capacity,
@@ -1021,8 +1067,35 @@ footer a { color: var(--accent); }
   }
 
   // ---------- render ----------
+  function applyMode() {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-adv]"), function (n) { n.hidden = !advanced(); });
+  }
+
+  // One sentence at the top: is this fleet worth tiering, and what would it give back?
+  function renderVerdict(clist, actOverCons, coldMB, saving, headroom) {
+    var box = $("verdict");
+    box.textContent = "";
+    box.className = "card verdict";
+    if (actOverCons == null) { box.hidden = true; return; }
+    box.hidden = false;
+    var v = candidateVerdict(actOverCons);
+    // Not classList.add: an empty token (a verdict with no severity) throws in the browser.
+    box.className = "card verdict" + (v[1] ? " " + v[1] : "");
+    var body = el("div");
+    body.appendChild(el("p", { class: "vh" }, t("verdictHead", v[0], pct(100 - actOverCons))));
+    var worth = [];
+    if (saving > 0) worth.push(t("verdictSaving", szu(saving), tierLabel()));
+    if (headroom > 0) worth.push(t("verdictHeadroom", szu(headroom)));
+    body.appendChild(el("p", { class: "vb" },
+      t("verdictBody", pct(actOverCons), szu(coldMB)) + (worth.length ? " " + worth.join(" ") : "")));
+    var bound = clist.filter(function (c) { return c.dramFit[1] === "warning"; }).length;
+    if (bound) body.appendChild(el("p", { class: "vn" }, t("verdictBound", num(bound), thr(THR))));
+    box.appendChild(body);
+  }
+
   function render() {
     hideTip();
+    applyMode();
     var t0 = rangeStart(), tStart = Math.max(tMin, t0);
     var axisStart = Math.min(tStart, tMax - DAY);   // at least 24 h on the x axis, so the first hours of data don't fill the chart
     var hosts = D.hosts.filter(hostVisible);
@@ -1033,7 +1106,9 @@ footer a { color: var(--accent); }
 
     // KPIs
     var kpis = $("kpis"); kpis.textContent = "";
-    function kpi(label, value, sub) {
+    // adv = expert only. Simple mode keeps the decision, the prize and the payoff; nothing else.
+    function kpi(label, value, sub, adv) {
+      if (adv && !advanced()) return;
       var k = el("div", { class: "kpi" }); k.appendChild(el("div", { class: "l" }, label));
       k.appendChild(el("div", { class: "v" }, value)); if (sub) k.appendChild(el("div", { class: "s" }, sub)); kpis.appendChild(k);
     }
@@ -1045,7 +1120,8 @@ footer a { color: var(--accent); }
     hs.forEach(function (x) { x.st.pts.forEach(function (p) { var f = fleet[p.t] || (fleet[p.t] = [0, 0]); f[0] += p.activeMB; f[1] += p.dram; }); });
     var fleetVals = Object.keys(fleet).map(function (k) { return fleet[k][0] / fleet[k][1] * 100; });
 
-    var vms = vmRows(t0);
+    // Per-VM rows only feed expert-only figures; on a large fleet this is the expensive part.
+    var vms = advanced() ? vmRows(t0) : [];
     var cold = 0, warm = 0, hot = 0, pressure = 0;
     vms.forEach(function (v) { if (v.status === "Cold") cold++; else if (v.status === "Warm") warm++; else if (v.status === "Hot") hot++; if (v.pressure) pressure++; });
 
@@ -1070,15 +1146,15 @@ footer a { color: var(--accent); }
     coldStamps.forEach(function (k) { coldSum += coldByTs[k]; });
     kpi(t("kActCons"), pct(fCons ? fActOnCons / fCons * 100 : null), t("kActConsSub"));
     kpi(t("kCold"), coldStamps.length ? szu(coldSum / coldStamps.length) : "–", t("kColdSub"));
-    kpi(t("kActConf"), pct(fAsg ? fActOnAsg / fAsg * 100 : null), t("kActConfSub"));
-    kpi(t("kHosts"), num(hosts.length), tiered ? t("kHostsTiered", tiered) : t("kHostsNoTier"));
-    kpi(t("kVms"), num(vOn), t("kVmsSub", num(vTot), state.cluster ? t("kVmsAllClusters") : ""));
-    kpi(t("kDram"), szu(dramTotal), nvmeTotal ? t("kDramNvme", szu(nvmeTotal)) : t("kDramPhys"));
+    kpi(t("kActConf"), pct(fAsg ? fActOnAsg / fAsg * 100 : null), t("kActConfSub"), true);
+    kpi(t("kHosts"), num(hosts.length), tiered ? t("kHostsTiered", num(tiered)) : t("kHostsNoTier"), true);
+    kpi(t("kVms"), num(vOn), t("kVmsSub", num(vTot), state.cluster ? t("kVmsAllClusters") : ""), true);
+    kpi(t("kDram"), szu(dramTotal), nvmeTotal ? t("kDramNvme", szu(nvmeTotal)) : t("kDramPhys"), true);
     kpi(t("kActDram", state.metric === "avg" ? t("mAvg") : state.metric === "max" ? t("mMax") : t("mP95")),
-      pct(state.metric === "max" ? maxOf(fleetVals) : p95(fleetVals)), t("kActDramSub"));
-    kpi(t("kAboveGuidance"), num(exceeding) + " / " + num(hosts.length), t("kAboveGuidanceSub", thr(THR)));
-    kpi(t("kColdVms"), num(cold), t("kColdVmsSub", num(warm), num(hot)));
-    kpi(t("kPressure"), num(pressure), t("kPressureSub"));
+      pct(state.metric === "max" ? maxOf(fleetVals) : p95(fleetVals)), t("kActDramSub"), true);
+    kpi(t("kAboveGuidance"), num(exceeding) + " / " + num(hosts.length), t("kAboveGuidanceSub", thr(THR)), true);
+    kpi(t("kColdVms"), num(cold), t("kColdVmsSub", num(warm), num(hot)), true);
+    kpi(t("kPressure"), num(pressure), t("kPressureSub"), true);
 
     // host panels
     var collected = (tMax - tMin) / HOUR + M.bucketHours;
@@ -1087,11 +1163,12 @@ footer a { color: var(--accent); }
         : t("daysN", num(collected / 24))) : "");
     var hp = $("hostPanels"); hp.textContent = "";
     var hostTop = 100;
+    if (!advanced()) hs.sort(function (a, b) { return (b.st.p95 || 0) - (a.st.p95 || 0); });
     hs.forEach(function (x) { x.st.pts.forEach(function (p) { if (p.consPct != null && p.consPct > hostTop) hostTop = p.consPct; }); });
     hostTop = Math.min(250, Math.ceil(hostTop / 50) * 50);
     hs.sort(function (a, b) { return (b.st.p95 || 0) - (a.st.p95 || 0); });
     if (!hs.length) hp.appendChild(el("div", { class: "empty" }, t("noHosts")));
-    hs.forEach(function (x) {
+    if (advanced()) hs.forEach(function (x) {
       var h = x.h;
       var sub = h.cluster + " • " + szu(h.dramMB) + " DRAM" + (h.nvmeMB ? " + " + szu(h.nvmeMB) + " NVMe" : "") +
         (x.st.activeOverCons == null ? " • P95 " + pct(x.st.p95) : " • " + t("fActCons") + " " + pct(x.st.activeOverCons));
@@ -1129,7 +1206,7 @@ footer a { color: var(--accent); }
     var cp = $("clusterPanels"); cp.textContent = "";
     var clist = Object.keys(clusters).map(function (k) { return clusters[k]; }).filter(function (c) { return c.name !== "(standalone)"; });
     if (!clist.length) cp.appendChild(el("div", { class: "empty" }, t("noClusters")));
-    clist.forEach(function (c) {
+    clist.forEach(function (c) {           // the figures feed the candidates, the sizing and the banner
       c.stretched = isStretched(c.name);
       var pts = Object.keys(c.t).map(Number).sort(function (a, b) { return a - b; }).map(function (ts) {
         var a = c.t[ts];
@@ -1188,7 +1265,7 @@ footer a { color: var(--accent); }
     clist.forEach(function (c) { c.pts.forEach(function (p) { if (p.consPct != null && p.consPct > clusterTop) clusterTop = p.consPct; }); });
     clusterTop = Math.min(250, Math.ceil(clusterTop / 50) * 50);
     clist.sort(function (a, b) { return (b.p95 || 0) - (a.p95 || 0); });
-    clist.forEach(function (c) {
+    if (advanced()) clist.forEach(function (c) {   // charts only: simple mode never draws them
       var model = c.stretched ? t("mStretched") : c.hosts.length > 1 ? t("mN1") : t("mOne");
       var sub = c.hosts.length + " × " + t("ttHosts") + " • " + szu(c.dram) + " DRAM • " + model + " • P95 " + pct(c.p95);
       panelChart(cp, c.name, sub, verdict(c.p95, c.maxv), c.pts, axisStart, tMax, function (p) {
@@ -1199,7 +1276,7 @@ footer a { color: var(--accent); }
           [t("ttHostsWithData"), num(p.n)]];
       }, function (p) { return p.consPct; }, clusterTop);
     });
-    renderTable($("clusterTable"), [
+    if (advanced()) renderTable($("clusterTable"), [
       { key: "name", label: t("cCluster") },
       { key: "actCons", label: t("cCandidate") + " – " + t("fActCons"), num: true, fmt: pct, title: t("ttActConsCol") },
       { key: "candidateLabel", label: t("fVerdict"), render: function (td, r) { badgeCell(td, r.candidate[0], r.candidate[1]); } },
@@ -1225,23 +1302,29 @@ footer a { color: var(--accent); }
     }), state.clusterSort), state.clusterSort, render);
     if (clist.length) {
       var candCount = clist.filter(function (c) { return c.candidate[1] === "good"; }).length;
-      kpi(t("kCandidates"), num(candCount) + " / " + num(clist.length), t("kCandidatesSub", thr(CAND)));
+      kpi(t("kCandidates"), num(candCount) + " / " + num(clist.length), t("kCandidatesSub", thr(CAND)), true);
       var savingTotal = 0, headroomTotal = 0, sizedAny = false;
       clist.forEach(function (c) { if (c.sizing) { savingTotal += c.sizing.saving; headroomTotal += c.sizing.headroom; sizedAny = true; } });
-      kpi(t("kSaving"), sizedAny ? szu(savingTotal) : "–", t("kSavingSub", thr(RATIO), thr(THR)));
+      kpi(t("kSaving"), sizedAny ? szu(savingTotal) : "–", t("kSavingSub", tierLabel(), thr(THR)));
       kpi(t("kHeadroom"), sizedAny ? szu(headroomTotal) : "–", t("kHeadroomSub"));
       var fitCount = clist.filter(function (c) { return c.consP95 != null && c.consP95 <= 100; }).length;
       kpi(t("kSurvive"), num(fitCount) + " / " + num(clist.length),
-        t("kSurviveSub", anyStretched ? t("kSurviveStretched") : t("kSurviveN1")));
+        t("kSurviveSub", anyStretched ? t("kSurviveStretched") : t("kSurviveN1")), true);
     }
 
+    var savingTotal2 = 0, headroomTotal2 = 0;
+    clist.forEach(function (c) { if (c.sizing) { savingTotal2 += c.sizing.saving; headroomTotal2 += c.sizing.headroom; } });
+    renderVerdict(clist, fCons ? fActOnCons / fCons * 100 : null, coldStamps.length ? coldSum / coldStamps.length : null,
+      savingTotal2, headroomTotal2);
     renderCandidates(clist);
     renderSizing(clist);
 
-    renderHeat(hs);
-    renderHostTable(hs);
-    renderVmTable(vms);
-    renderRuns();
+    if (advanced()) {
+      renderHeat(hs);
+      renderHostTable(hs);
+      renderVmTable(vms);
+      renderRuns();
+    }
   }
 
   // ---------- tiering candidates ----------
@@ -1338,24 +1421,25 @@ footer a { color: var(--accent); }
 
   // ---------- sizing ----------
   function renderSizing(clist) {
-    $("sizingHint").textContent = t("sizingHint", thr(RATIO), thr(THR));
+    $("sizingHint").textContent = t("sizingHint", tierLabel(), thr(THR));
     $("sizingNote").textContent = t("sizingNote");
     var rows = clist.filter(function (c) { return c.sizing; }).map(function (c) {
       var z = c.sizing;
       return { name: c.name, dram: z.dram, nvme: z.nvme, active: z.active, consPeak: z.consPeak,
         needed: z.needed, saving: z.saving, capacity: z.capacity, headroom: z.headroom };
     });
-    renderTable($("sizingTable"), [
+    var cols = [
       { key: "name", label: t("cCluster") },
       { key: "dram", label: t("cDramToday") + " " + U.name, num: true, fmt: sz },
-      { key: "nvme", label: t("cNvmeToday") + " " + U.name, num: true, fmt: function (v) { return v ? sz(v) : "–"; } },
-      { key: "active", label: t("cActiveP95") + " " + U.name, num: true, fmt: sz },
-      { key: "consPeak", label: t("cConsPeak") + " " + U.name, num: true, fmt: sz },
-      { key: "needed", label: t("cDramNeeded") + " " + U.name, num: true, fmt: sz, title: t("ttDramNeeded", thr(THR), thr(RATIO)) },
+      { key: "nvme", label: t("cNvmeToday") + " " + U.name, num: true, fmt: function (v) { return v ? sz(v) : "–"; }, adv: true },
+      { key: "active", label: t("cActiveP95") + " " + U.name, num: true, fmt: sz, adv: true },
+      { key: "consPeak", label: t("cConsPeak") + " " + U.name, num: true, fmt: sz, adv: true },
+      { key: "needed", label: t("cDramNeeded") + " " + U.name, num: true, fmt: sz, title: t("ttDramNeeded", thr(THR), thr(ratio())) },
       { key: "saving", label: t("cDramSaving") + " " + U.name, num: true, fmt: sz, title: t("ttDramSaving") },
-      { key: "capacity", label: t("cCapacity") + " " + U.name, num: true, fmt: sz, title: t("ttCapacity", thr(RATIO)) },
+      { key: "capacity", label: t("cCapacity") + " " + U.name, num: true, fmt: sz, title: t("ttCapacity", thr(ratio())), adv: true },
       { key: "headroom", label: t("cHeadroom") + " " + U.name, num: true, fmt: sz, title: t("ttHeadroom") }
-    ], sortRows(rows, state.sizingSort), state.sizingSort, render);
+    ].filter(function (c) { return advanced() || !c.adv; });
+    renderTable($("sizingTable"), cols, sortRows(rows, state.sizingSort), state.sizingSort, render);
   }
 
   // ---------- how it is calculated ----------

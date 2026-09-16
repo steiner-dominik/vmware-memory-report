@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -213,6 +214,111 @@ class TemplateTest(unittest.TestCase):
         remote = [r for r in refs if re.match(r"(?:https?:)?//", r) and "dominik.st" not in r]
         self.assertEqual(remote, [], "the report must stay self-contained: %s" % remote)
         self.assertNotIn("<link rel=\"stylesheet\"", self.html)
+
+
+class RenderTest(unittest.TestCase):
+    """Runs the report's own JavaScript against a DOM shim.
+
+    Not a browser - it proves the render pass completes and the figures are sane, not that
+    anything is laid out correctly. Skipped where node is unavailable.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("node"):
+            raise unittest.SkipTest("node is not installed")
+        cls.tmp = tempfile.mkdtemp()
+        data = os.path.join(cls.tmp, "data")
+        os.makedirs(data)
+        # Two hosts that already run a tier, with a very cold working set.
+        now = _dt.datetime(2026, 9, 15, 12, 5, 0)
+        rows, runs = [], []
+        for quarter in range(8):
+            ts = now - _dt.timedelta(minutes=15 * quarter)
+            for n in (1, 2):
+                rows.append({
+                    "Timestamp": mt.iso(ts), "WindowStart": mt.iso(ts - _dt.timedelta(minutes=15)),
+                    "VCenter": "vc", "Cluster": "C", "VMHost": "esx%d" % n, "HostId": "h%d" % n,
+                    "ConnectionState": "connected", "MaintenanceMode": "false", "TieringType": "softwareTiering",
+                    "PhysicalMB": 196608, "DramMB": 98304, "NvmeTierMB": 98304, "VMsOn": 10, "AssignedMB": 90000,
+                    "Samples": 45, "ActiveAvgMB": 7700, "ActiveP95MB": 8316, "ActiveMaxMB": 9240,
+                    "ConsumedAvgMB": 76000, "ConsumedMaxMB": 77520, "BalloonMaxMB": 0, "SwapUsedMaxMB": 0})
+            runs.append({"Timestamp": mt.iso(ts), "VCenter": "vc", "Status": "ok", "Hosts": 2, "HostsConnected": 2,
+                         "VMsTotal": 24, "VMsOn": 20, "VMsOff": 4, "VMsSuspended": 0, "Templates": 2,
+                         "VMsExcluded": 0, "VMsWithoutStats": 0, "HostsWithoutStats": 0, "DurationSec": 4, "Message": ""})
+        mt.append_csv(os.path.join(data, "host-2026-09.csv"), mt.HOST_FIELDS, rows)
+        mt.append_csv(os.path.join(data, "run-2026-09.csv"), mt.RUN_FIELDS, runs)
+        cls.report = os.path.join(cls.tmp, "report.html")
+        cfg = config(cls.tmp)
+        with io.open(TEMPLATE, encoding="utf-8") as handle:
+            template = handle.read()
+        payload = mt.script_safe_json(mt.build_report_data(cfg, now, 30, "test"))
+        with io.open(cls.report, "w", encoding="utf-8") as handle:
+            handle.write(template.replace(mt.DATA_PLACEHOLDER, payload, 1))
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "tmp"):
+            shutil.rmtree(cls.tmp)
+
+    def render(self, mode="simple", tier="100", lang="en"):
+        out = subprocess.run(
+            ["node", os.path.join(ROOT, "tests", "run_report.js"), self.report, mode, tier, lang],
+            capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, "render failed (%s/%s/%s):\n%s" % (mode, tier, lang, out.stderr))
+        return json.loads(out.stdout)
+
+    def test_every_mode_language_and_ratio_renders(self):
+        for mode in ("simple", "expert"):
+            for tier in ("50", "100", "200", "400"):
+                for lang in ("en", "de"):
+                    r = self.render(mode, tier, lang)
+                    self.assertTrue(r["kpis"], "no figures for %s/%s/%s" % (mode, tier, lang))
+                    joined = " ".join(r["kpis"]) + r["verdict"]
+                    for bad in ("NaN", "undefined", "[object"):
+                        self.assertNotIn(bad, joined, "%s in %s/%s/%s" % (bad, mode, tier, lang))
+
+    def test_simple_mode_hides_the_detail(self):
+        simple, expert = self.render("simple"), self.render("expert")
+        self.assertGreater(simple["advTotal"], 0)
+        self.assertEqual(simple["advHidden"], simple["advTotal"])
+        self.assertEqual(expert["advHidden"], 0)
+        self.assertLess(len(simple["kpis"]), len(expert["kpis"]))
+        self.assertLess(len(simple["sizing"][0]), len(expert["sizing"][0]))
+
+    def test_verdict_names_the_decision_metric(self):
+        r = self.render("simple")
+        # active 7700 of consumed 76000 = 10.1%, so ~90% of what the hosts back is cold
+        self.assertIn("Strong candidate", r["verdict"])
+        self.assertIn("10.1%", r["verdict"])
+        self.assertFalse(r["verdictHidden"])
+
+    def test_a_bigger_tier_only_moves_the_sizing(self):
+        def figures(tier):
+            """The one data row, keyed by its full column heading."""
+            rows = self.render("simple", tier)["sizing"]
+            self.assertEqual(len(rows), 2, "expected one cluster row")
+            return dict((head, float(cell.replace(",", "")))
+                        for head, cell in zip(rows[0][1:], rows[1][1:]))
+        small, big = figures("50"), figures("400")
+        needed = [k for k in small if k.startswith("DRAM needed")][0]
+        saved = [k for k in small if k.startswith("DRAM saved")][0]
+        extra = [k for k in small if k.startswith("Extra")][0]
+        # A bigger tier backs more memory per GB of DRAM: less DRAM needed, more saved, more capacity.
+        self.assertLess(big[needed], small[needed])
+        self.assertGreater(big[saved], small[saved])
+        self.assertGreater(big[extra], small[extra])
+
+    def test_the_verdict_does_not_depend_on_the_tier_size(self):
+        """Active over consumed memory is the decision, and no ratio can change it."""
+        verdicts = [self.render("simple", tier) for tier in ("50", "100", "200", "400")]
+        for r in verdicts:
+            self.assertIn("Strong candidate", r["verdict"])
+            self.assertIn("10.1%", r["verdict"])
+        decision = [k for k in verdicts[0]["kpis"] if k.startswith("Active vs. consumed")]
+        self.assertEqual(len(decision), 1)
+        for r in verdicts[1:]:
+            self.assertEqual([k for k in r["kpis"] if k.startswith("Active vs. consumed")], decision)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,28 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.09.03
+
+The report was showing everything it knows at once. It now opens on the decision and
+keeps the rest one click away.
+
+- **Simple view is the default.** A one-line verdict ("Strong candidate - 90% of the
+  memory your hosts back is cold"), four figures and two tables. The host and cluster
+  charts, failover headroom, the heatmap and the per-host and per-VM tables move behind
+  an **Everything** switch, remembered per browser. Simple view also skips building
+  them, which is the expensive part on a large fleet.
+- **Simulate the NVMe tier size**: 50%, 100% (the 1:1 default), 200% or 400% of DRAM,
+  the way it is configured on the host. It moves the sizing numbers only - whether a
+  cluster is a candidate is active over consumed memory, which does not depend on the
+  ratio. `tier_ratio` still sets where the switch starts.
+- The wording around the ratio changed from "1:1.5" to "150% of DRAM" throughout, to
+  match how the setting is expressed on the host.
+
+### Fixes
+
+- The verdict banner used `classList.add()` with a possibly empty token, which throws
+  in the browser. Caught before release by the new headless render test.
+
 ## 26.09.02
 
 The report now leads with the metric the tiering decision is actually made on, and
