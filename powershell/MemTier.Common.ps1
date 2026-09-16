@@ -16,7 +16,8 @@ $script:HostFields = @(
     'Timestamp', 'WindowStart', 'VCenter', 'Cluster', 'VMHost', 'HostId', 'ConnectionState', 'MaintenanceMode',
     'TieringType', 'PhysicalMB', 'DramMB', 'NvmeTierMB', 'VMsOn', 'AssignedMB', 'Samples',
     'ActiveAvgMB', 'ActiveP95MB', 'ActiveMaxMB', 'ConsumedAvgMB', 'ConsumedMaxMB', 'BalloonMaxMB', 'SwapUsedMaxMB',
-    'CpuCores', 'CpuThreads', 'CpuMhz', 'CpuAvgPct', 'CpuP95Pct', 'CpuMaxPct'
+    'CpuCores', 'CpuThreads', 'CpuMhz', 'CpuAvgPct', 'CpuP95Pct', 'CpuMaxPct',
+    'TierDramMB', 'TierNvmeMB'
 )
 $script:VmFields = @(
     'Timestamp', 'WindowStart', 'VCenter', 'Cluster', 'VMHost', 'VM', 'VMId', 'AssignedMB', 'ReservationMB',
@@ -352,6 +353,11 @@ $script:HostCounters = @('mem.active.average', 'mem.consumed.average', 'mem.vmme
 # CPU answers one question: is a host out of memory while its CPUs idle? That host gains capacity
 # from a tier instead of from another socket. Optional - a vCenter without them still reports memory.
 $script:HostCpuCounters = @('cpu.usage.average')
+# How much machine memory each tier actually holds. Published from vSphere 9.0 onwards only
+# (8.0 U3 has no counter with "tier" in its name at all), keyed per instance by the tier's name
+# as MemoryTierInfo reports it - "DRAM", "NVMe". Already in MB, and a level 2 counter, so it
+# arrives with the default statistics settings.
+$script:HostTierCounters = @('mem.tier.consumed.latest')
 $script:VmCounters = @('mem.active.average', 'mem.consumed.average', 'mem.vmmemctl.average', 'mem.swapped.average')
 
 function Import-MemTierPowerCLI {
@@ -534,13 +540,18 @@ function Get-MemTierTierCounters {
 
 function Invoke-MemTierPerfQuery {
     <# Queries real-time stats for a batch; splits the batch on failure and skips entities that fail alone. #>
-    param($PerfManager, [object[]]$Entities, $CounterIds, [datetime]$StartUtc, [hashtable]$Results, [System.Collections.Generic.List[string]]$Failed)
+    param($PerfManager, [object[]]$Entities, $CounterIds, [datetime]$StartUtc, [hashtable]$Results, [System.Collections.Generic.List[string]]$Failed, $PerInstance)
     if ($Entities.Count -eq 0) { return }
+    if ($null -eq $PerInstance) { $PerInstance = @() }
+    $perInstanceSet = @{}
+    foreach ($n in $PerInstance) { $perInstanceSet[$n] = $true }
     $metricIds = New-Object 'System.Collections.Generic.List[VMware.Vim.PerfMetricId]'
-    foreach ($id in $CounterIds.Values) {
+    foreach ($k in $CounterIds.Keys) {
         $m = New-Object VMware.Vim.PerfMetricId
-        $m.CounterId = $id
-        $m.Instance = ''
+        $m.CounterId = $CounterIds[$k]
+        # "*" asks for every instance; the tier counters are keyed by tier name, everything
+        # else only has an aggregate and its per-device rollups would be noise.
+        $m.Instance = if ($perInstanceSet.ContainsKey($k)) { '*' } else { '' }
         $metricIds.Add($m)
     }
     $specs = New-Object 'System.Collections.Generic.List[VMware.Vim.PerfQuerySpec]'
@@ -564,8 +575,8 @@ function Invoke-MemTierPerfQuery {
         }
         Write-MemTierLog ("perf batch of {0} failed ({1}) - splitting" -f $Entities.Count, $_.Exception.Message) 'DEBUG'
         $half = [int][math]::Floor($Entities.Count / 2)
-        Invoke-MemTierPerfQuery $PerfManager $Entities[0..($half - 1)] $CounterIds $StartUtc $Results $Failed
-        Invoke-MemTierPerfQuery $PerfManager $Entities[$half..($Entities.Count - 1)] $CounterIds $StartUtc $Results $Failed
+        Invoke-MemTierPerfQuery $PerfManager $Entities[0..($half - 1)] $CounterIds $StartUtc $Results $Failed $PerInstance
+        Invoke-MemTierPerfQuery $PerfManager $Entities[$half..($Entities.Count - 1)] $CounterIds $StartUtc $Results $Failed $PerInstance
         return
     }
     $byId = @{}
@@ -575,11 +586,16 @@ function Invoke-MemTierPerfQuery {
         $eid = $em.Entity.Value
         if (-not $Results.ContainsKey($eid)) { $Results[$eid] = @{} }
         foreach ($series in @($em.Value)) {
-            if ($null -eq $series -or $series.Id.Instance) { continue }
+            if ($null -eq $series) { continue }
             $name = $byId[[int]$series.Id.CounterId]
             if (-not $name) { continue }
-            if (-not $Results[$eid].ContainsKey($name)) { $Results[$eid][$name] = New-Object 'System.Collections.Generic.List[long]' }
-            if ($series.Value) { $Results[$eid][$name].AddRange([long[]]$series.Value) }
+            $instance = [string]$series.Id.Instance
+            $isPerInstance = $perInstanceSet.ContainsKey($name)
+            if ($instance -and -not $isPerInstance) { continue }
+            if (-not $instance -and $isPerInstance) { continue }
+            $key = if ($isPerInstance) { "$name|$instance" } else { $name }
+            if (-not $Results[$eid].ContainsKey($key)) { $Results[$eid][$key] = New-Object 'System.Collections.Generic.List[long]' }
+            if ($series.Value) { $Results[$eid][$key].AddRange([long[]]$series.Value) }
         }
     }
 }
@@ -601,6 +617,8 @@ function Get-MemTierStatistics {
     $hostCounterIds = Get-MemTierCounterIds $perfManager $script:HostCounters $counterIndex
     $hostCpuIds = Get-MemTierOptionalCounterIds $script:HostCpuCounters $counterIndex
     foreach ($k in $hostCpuIds.Keys) { $hostCounterIds[$k] = $hostCpuIds[$k] }
+    $hostTierIds = Get-MemTierOptionalCounterIds $script:HostTierCounters $counterIndex
+    foreach ($k in $hostTierIds.Keys) { $hostCounterIds[$k] = $hostTierIds[$k] }
     if ($hostCpuIds.Count -eq 0) {
         Write-MemTierLog ("this vCenter does not publish {0} - the CPU columns stay empty" -f ($script:HostCpuCounters -join ', '))
     }
@@ -612,14 +630,14 @@ function Get-MemTierStatistics {
     $out = @{ Hosts = @{}; Vms = @{}; LiveHosts = $liveHosts.Count
         TierCounters = Get-MemTierTierCounters $counterIndex }
     foreach ($pass in @(
-            @{ Kind = 'Hosts'; Entities = $liveHosts; Ids = $hostCounterIds; Swap = 'mem.swapused.average' },
-            @{ Kind = 'Vms'; Entities = $vmEntities; Ids = $vmCounterIds; Swap = 'mem.swapped.average' })) {
+            @{ Kind = 'Hosts'; Entities = $liveHosts; Ids = $hostCounterIds; Swap = 'mem.swapused.average'; PerInstance = @($hostTierIds.Keys) },
+            @{ Kind = 'Vms'; Entities = $vmEntities; Ids = $vmCounterIds; Swap = 'mem.swapped.average'; PerInstance = @() })) {
         $raw = @{}
         $failed = New-Object 'System.Collections.Generic.List[string]'
         $entities = $pass.Entities
         for ($i = 0; $i -lt $entities.Count; $i += $BatchSize) {
             $end = [math]::Min($i + $BatchSize, $entities.Count) - 1
-            Invoke-MemTierPerfQuery $perfManager @($entities[$i..$end]) $pass.Ids $StartUtc $raw $failed
+            Invoke-MemTierPerfQuery $perfManager @($entities[$i..$end]) $pass.Ids $StartUtc $raw $failed $pass.PerInstance
         }
         foreach ($eid in $raw.Keys) {
             $series = $raw[$eid]
@@ -629,6 +647,7 @@ function Get-MemTierStatistics {
                 Balloon = Get-MemTierSummary $series['mem.vmmemctl.average']
                 Swap = Get-MemTierSummary $series[$pass.Swap]
                 Cpu = Get-MemTierPercentSummary $series['cpu.usage.average']
+                Tier = Get-MemTierTierConsumed $series
             }
         }
         $out[$pass.Kind + 'Failed'] = $failed.Count
@@ -636,7 +655,44 @@ function Get-MemTierStatistics {
     $out
 }
 
+function Get-MemTierTierConsumed {
+    <#
+        Average machine memory consumed per tier, in MB, from the per-instance tier counter.
+        The instance is the tier's name; anything that is not DRAM is the tier being added.
+        Returns @{ Dram; Nvme } with $null values where the counter is absent (every vCenter
+        before 9.0), so the report falls back to deriving the split.
+    #>
+    param($Series)
+    $dram = $null; $nvme = $null
+    foreach ($key in $Series.Keys) {
+        $parts = $key -split '\|', 2
+        if ($parts.Count -ne 2 -or $script:HostTierCounters -notcontains $parts[0] -or -not $parts[1]) { continue }
+        $values = $Series[$key]
+        if (-not $values -or $values.Count -eq 0) { continue }
+        $sum = 0.0
+        $n = 0
+        foreach ($v in $values) { if ($null -ne $v -and $v -ge 0) { $sum += [double]$v; $n++ } }
+        if ($n -eq 0) { continue }
+        $avg = $sum / $n
+        if ($parts[1] -eq 'DRAM') {
+            if ($null -eq $dram) { $dram = 0.0 }
+            $dram += $avg
+        }
+        else {
+            if ($null -eq $nvme) { $nvme = 0.0 }
+            $nvme += $avg
+        }
+    }
+    if ($null -eq $dram -and $null -eq $nvme) { return @{ Dram = $null; Nvme = $null } }
+    # One tier reporting is enough: the other is genuinely zero, not unknown.
+    @{
+        Dram = Get-RoundHalfUp $(if ($null -eq $dram) { 0.0 } else { $dram })
+        Nvme = Get-RoundHalfUp $(if ($null -eq $nvme) { 0.0 } else { $nvme })
+    }
+}
+
 function Get-MemTierEmptyStats {
     $empty = @{ Avg = $null; P95 = $null; Max = $null; Samples = 0 }
-    @{ Active = $empty; Consumed = $empty; Balloon = $empty; Swap = $empty; Cpu = $empty }
+    @{ Active = $empty; Consumed = $empty; Balloon = $empty; Swap = $empty; Cpu = $empty
+        Tier = @{ Dram = $null; Nvme = $null } }
 }

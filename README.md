@@ -43,7 +43,7 @@ A single look at vCenter won't tell you. Active memory swings with backups, batc
 * **How much would you save?** DRAM you would not buy again, and extra memory a tier would free up.
 * **Does the hot set still fit DRAM?** The 50% feasibility check, per host and per cluster.
 * **Does it still fit after a failure?** Checked for N+1 and for stretched clusters (a whole site down).
-* **What about hosts that already have a tier?** Cold memory sitting on NVMe is *not* counted as a saving again — see the arithmetic below.
+* **What about hosts that already have a tier?** Cold memory sitting on NVMe is *not* counted as a saving again — see the arithmetic below. From vSphere 9 the DRAM/NVMe split is measured rather than derived.
 * **Which VMs are oversized?** Worst-day active vs. configured memory per VM.
 * **Which hosts need a tier rather than a new host?** Memory full, CPUs idle — that host gains capacity from NVMe instead of from another socket.
 
@@ -67,7 +67,7 @@ A single look at vCenter won't tell you. Active memory swings with backups, batc
 | | Supported | Tested |
 |---|---|---|
 | **vCenter** | 8.0 U1 or later (Python edition needs the VI/JSON API from 8.0 U1) | 8.0 U3, 9.1 |
-| **ESXi / memory tiering** | NVMe tier sizes are read on 8.0 U3 or later; older hosts are reported with DRAM only | 8.0 U3, 9.1 |
+| **ESXi / memory tiering** | NVMe tier sizes are read on 8.0 U3 or later; older hosts are reported with DRAM only. How much each tier actually holds needs vSphere 9 (`mem.tier.consumed.latest`); on 8.0 U3 it is derived from consumed memory | 8.0 U3, 9.1 |
 | **PowerShell** | Windows PowerShell 5.1 or PowerShell 7.x, with PowerCLI 13.x or later (VCF.PowerCLI) | PowerShell 7.x |
 | **Python** | 3.6 or later, standard library only | Python shipped with vCenter 8.0 U3 / 9.1, Python 3.14 |
 | **Operating system** | Windows (scheduled task installer), Linux (cron setup), macOS for manual runs | Linux (Photon OS), macOS |

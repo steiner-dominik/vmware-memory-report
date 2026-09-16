@@ -53,6 +53,7 @@ HOST_FIELDS = [
     "TieringType", "PhysicalMB", "DramMB", "NvmeTierMB", "VMsOn", "AssignedMB", "Samples",
     "ActiveAvgMB", "ActiveP95MB", "ActiveMaxMB", "ConsumedAvgMB", "ConsumedMaxMB", "BalloonMaxMB", "SwapUsedMaxMB",
     "CpuCores", "CpuThreads", "CpuMhz", "CpuAvgPct", "CpuP95Pct", "CpuMaxPct",
+    "TierDramMB", "TierNvmeMB",
 ]
 VM_FIELDS = [
     "Timestamp", "WindowStart", "VCenter", "Cluster", "VMHost", "VM", "VMId", "AssignedMB", "ReservationMB",
@@ -69,6 +70,12 @@ HOST_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.ave
 # gains capacity from a tier instead of from another socket. Optional on purpose - a vCenter that
 # does not publish them must still produce a memory report.
 HOST_CPU_COUNTERS = ["cpu.usage.average"]
+# How much machine memory each tier actually holds. Published from vSphere 9.0 onwards only
+# (8.0 U3 has no counter with "tier" in its name at all), keyed per instance by the tier's name
+# as memoryTierInfo reports it - "DRAM", "NVMe". Unit is MB already, and it is a level 2 counter,
+# so it arrives with the default statistics settings. Where it is missing the report falls back
+# to deriving the split from consumed memory and DRAM size.
+HOST_TIER_COUNTERS = ["mem.tier.consumed.latest"]
 VM_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.average", "mem.swapped.average"]
 REALTIME_INTERVAL = 20
 # Supported collection intervals in minutes. 60 is plenty for a sizing decision; 15 and 30
@@ -207,6 +214,30 @@ def p95(values):
         return None
     ordered = sorted(values)
     return ordered[int(math.ceil(0.95 * len(ordered))) - 1]
+
+
+def tier_consumed(series, tier_names):
+    """Average machine memory consumed per tier, in MB, from the per-instance tier counter.
+
+    The instance is the tier's name as memoryTierInfo reports it. Anything that is not the DRAM
+    tier is the tier being added, whatever it is called. Returns (dram, nvme), each None when the
+    counter is absent - which is every vCenter before 9.0.
+    """
+    dram_names = set(n.lower() for n, kind in tier_names if kind.lower() == "dram")
+    totals = {}
+    for key, values in series.items():
+        name, _, instance = key.partition("|")
+        if name not in HOST_TIER_COUNTERS or not instance:
+            continue
+        valid = [v for v in values if v is not None and v >= 0]
+        if not valid:
+            continue
+        is_dram = instance.lower() in dram_names or (not dram_names and instance.lower() == "dram")
+        bucket = "dram" if is_dram else "nvme"
+        totals[bucket] = totals.get(bucket, 0) + sum(valid) / float(len(valid))
+    if not totals:
+        return None, None
+    return round_half_up(totals.get("dram", 0)), round_half_up(totals.get("nvme", 0))
 
 
 def summarize_pct(values):
@@ -630,11 +661,18 @@ class ViJsonClient(object):
         # report "none available" when the counters are simply somewhere else.
         return sorted(n for n in self.counter_lookup() if "tier" in n.lower())
 
-    def query_perf(self, entity_type, counter_map, start):
-        """Returns {entity_id: {counter_name: [values]}}; splits batches that fault and skips entities that fail alone."""
+    def query_perf(self, entity_type, counter_map, start, per_instance=()):
+        """Returns {entity_id: {counter_name: [values]}}; splits batches that fault and skips entities that fail alone.
+
+        Counters named in per_instance are kept per instance under "name|instance"; every other
+        counter keeps only the aggregate, because its per-device rollups say nothing useful here.
+        """
         perf = self.content["perfManager"]["value"]
         by_id = dict((v, k) for k, v in counter_map.items())
-        metric_ids = [{"_typeName": "PerfMetricId", "counterId": cid, "instance": ""} for cid in counter_map.values()]
+        per_instance = set(per_instance)
+        metric_ids = [{"_typeName": "PerfMetricId", "counterId": cid,
+                       "instance": "*" if by_id[cid] in per_instance else ""}
+                      for cid in counter_map.values()]
         results, failed = {}, []
 
         def run(ids):
@@ -659,14 +697,20 @@ class ViJsonClient(object):
                 series = results.setdefault(eid, {})
                 for s in item.get("value", []) or []:
                     name = by_id.get(s["id"]["counterId"])
-                    if name and (s["id"].get("instance") or "") == "":
-                        series.setdefault(name, []).extend(unbox(s.get("value")) or [])
+                    if not name:
+                        continue
+                    instance = s["id"].get("instance") or ""
+                    if instance and name not in per_instance:
+                        continue        # instance rollups of ordinary counters are noise
+                    key = "%s|%s" % (name, instance) if name in per_instance else name
+                    if instance or name not in per_instance:
+                        series.setdefault(key, []).extend(unbox(s.get("value")) or [])
 
         return results, failed, run
 
 
-def perf_batches(client, entity_type, ids, counter_map, start, batch_size):
-    results, failed, run = client.query_perf(entity_type, counter_map, start)
+def perf_batches(client, entity_type, ids, counter_map, start, batch_size, per_instance=()):
+    results, failed, run = client.query_perf(entity_type, counter_map, start, per_instance)
     for i in range(0, len(ids), batch_size):
         run(ids[i:i + batch_size])
     return results, failed
@@ -804,7 +848,9 @@ def collect_vcenter(cfg, server, now):
                 if dram:
                     dram_mb = round_half_up(dram / 1048576.0)
                 nvme_mb = round_half_up(nvme / 1048576.0)
+            tier_names = [(str(t.get("name") or ""), str(t.get("type") or "")) for t in tiers]
             host_meta[mid] = {
+                "tiers": tier_names,
                 "name": p.get("name"), "cluster": cluster, "state": p.get("runtime.connectionState"),
                 "maint": bool(p.get("runtime.inMaintenanceMode")), "phys": phys_mb, "dram": dram_mb, "nvme": nvme_mb,
                 "tiering": (tier_info.get(mid) or {}).get("hardware.memoryTieringType") or "",
@@ -864,8 +910,17 @@ def collect_vcenter(cfg, server, now):
         if not cpu_counters:
             LOG.info("%s does not publish %s - the CPU columns stay empty",
                      server, ", ".join(HOST_CPU_COUNTERS))
+        tier_perf = client.optional_counter_ids(HOST_TIER_COUNTERS)
+        if tier_perf:
+            LOG.info("%s reports memory consumed per tier (%s)", server, ", ".join(sorted(tier_perf)))
+        elif any(h["nvme"] for h in host_meta.values()):
+            LOG.info("%s has hosts with an NVMe tier but does not publish %s (vSphere 9 and later do) - "
+                     "the split between DRAM and NVMe is derived from consumed memory instead",
+                     server, ", ".join(HOST_TIER_COUNTERS))
         host_counters = dict(host_counters, **cpu_counters)
-        host_stats, host_failed = perf_batches(client, "HostSystem", live_hosts, host_counters, start, cfg.batch_size)
+        host_counters.update(tier_perf)
+        host_stats, host_failed = perf_batches(client, "HostSystem", live_hosts, host_counters, start,
+                                               cfg.batch_size, per_instance=tier_perf.keys())
         vm_stats, vm_failed = perf_batches(client, "VirtualMachine", sorted(vm_meta), vm_counters, start, cfg.batch_size)
 
         hosts_without = 0
@@ -877,6 +932,7 @@ def collect_vcenter(cfg, server, now):
             _, _, b_max, _ = summarize_kb(series.get("mem.vmmemctl.average", []))
             _, _, s_max, _ = summarize_kb(series.get("mem.swapused.average", []))
             cpu_avg, cpu_p95, cpu_max = summarize_pct(series.get("cpu.usage.average", []))
+            tier_dram, tier_nvme = tier_consumed(series, h["tiers"])
             if h["state"] == "connected" and not samples:
                 hosts_without += 1
             host_rows.append({
@@ -888,6 +944,7 @@ def collect_vcenter(cfg, server, now):
                 "ConsumedMaxMB": c_max, "BalloonMaxMB": b_max, "SwapUsedMaxMB": s_max,
                 "CpuCores": h["cores"], "CpuThreads": h["threads"], "CpuMhz": h["mhz"],
                 "CpuAvgPct": cpu_avg, "CpuP95Pct": cpu_p95, "CpuMaxPct": cpu_max,
+                "TierDramMB": tier_dram, "TierNvmeMB": tier_nvme,
             })
 
         vms_without = counts["unreachable"]
@@ -1011,7 +1068,8 @@ def build_report_data(cfg, now, days, builder):
             acc = h["buckets"][b] = {"w": 0, "avg": 0.0, "cons": 0.0, "cons_w": 0, "cons_max": 0, "cons_max_n": 0,
                                      "vms": 0, "assigned": 0, "p95": 0, "max": 0, "balloon": 0, "swap": 0,
                                      "dram": 0, "nvme": 0,
-                                     "cpu": 0.0, "cpu_w": 0, "cpu_p95": 0.0, "cpu_max": 0.0}
+                                     "cpu": 0.0, "cpu_w": 0, "cpu_p95": 0.0, "cpu_max": 0.0,
+                                     "t_dram": 0.0, "t_nvme": 0.0, "t_w": 0}
             h["order"].append(b)
         acc["w"] += samples
         acc["avg"] += avg * samples
@@ -1032,6 +1090,11 @@ def build_report_data(cfg, now, days, builder):
         acc["dram"] = as_int(r.get("DramMB")) or as_int(r.get("PhysicalMB")) or 0
         # Per bucket, not per host: a host that gets a tier mid-range must not look tiered all along.
         acc["nvme"] = as_int(r.get("NvmeTierMB")) or 0
+        t_dram, t_nvme = as_int(r.get("TierDramMB")), as_int(r.get("TierNvmeMB"))
+        if t_dram is not None or t_nvme is not None:
+            acc["t_dram"] += (t_dram or 0) * samples
+            acc["t_nvme"] += (t_nvme or 0) * samples
+            acc["t_w"] += samples
         cpu = as_float(r.get("CpuAvgPct"))
         if cpu is not None:
             acc["cpu"] += cpu * samples
@@ -1051,7 +1114,9 @@ def build_report_data(cfg, now, days, builder):
                            a["cons_max"] if a["cons_max_n"] else None, a["nvme"],
                            round1(a["cpu"] / a["cpu_w"]) if a["cpu_w"] else None,
                            round1(a["cpu_p95"]) if a["cpu_w"] else None,
-                           round1(a["cpu_max"]) if a["cpu_w"] else None])
+                           round1(a["cpu_max"]) if a["cpu_w"] else None,
+                           round_half_up(a["t_dram"] / a["t_w"]) if a["t_w"] else None,
+                           round_half_up(a["t_nvme"] / a["t_w"]) if a["t_w"] else None])
         host_list.append({"key": key, "vc": h["vc"], "name": h["name"], "cluster": h["cluster"], "tiering": h["tiering"],
                           "dramMB": h["dramMB"], "nvmeMB": h["nvmeMB"], "physMB": h["physMB"],
                           "cores": h.get("cores"), "threads": h.get("threads"), "mhz": h.get("mhz"), "s": series})

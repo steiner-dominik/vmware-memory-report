@@ -11,7 +11,7 @@ Environment modelled:
   vcenter01.example.com
     Metro-Stretched  8 hosts, 2 sites, 1024 GB  low active, consumed ~58% -> fits N+1, not a site failure
     Compute          4 hosts,  768 GB          busy, nightly batch peaks above the 50% active guidance
-    VDI              4 hosts,  512 GB + 512 GB NVMe tier (tiering on, consumed above DRAM)
+    VDI              4 hosts,  512 GB + 512 GB NVMe tier (tiering on, per-tier counters as on vSphere 9)
   vcenter02.example.com
     Branch           2 hosts,  384 GB          memory full, CPU idle -> tier instead of a new host
     (standalone)     1 witness host, 64 GB
@@ -133,7 +133,11 @@ def main():
                 "BalloonMaxMB": 0, "SwapUsedMaxMB": 0,
                 "CpuCores": h["cores"], "CpuThreads": h["cores"] * 2, "CpuMhz": 2600,
                 "CpuAvgPct": mt.round1(cpu_pct), "CpuP95Pct": mt.round1(min(99.0, cpu_pct * 1.2)),
-                "CpuMaxPct": mt.round1(min(100.0, cpu_pct * 1.45))})
+                "CpuMaxPct": mt.round1(min(100.0, cpu_pct * 1.45)),
+                # Only the tiered cluster reports these: they exist from vSphere 9 onwards, and
+                # everywhere else the report derives the split instead.
+                "TierDramMB": min(consumed_mb, h["dram"]) if h["nvme"] else None,
+                "TierNvmeMB": max(0, consumed_mb - h["dram"]) if h["nvme"] else None})
         runs = []
         for vc in sorted(set(h["vc"] for h in hosts)):
             vc_vms = [v for v in vms if v["vc"] == vc]

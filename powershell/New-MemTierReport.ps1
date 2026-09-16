@@ -130,6 +130,7 @@ try {
             $iAssigned = $ix.AssignedMB; $iBalloon = $ix.BalloonMaxMB; $iSwap = $ix.SwapUsedMaxMB
             $iCores = $ix.CpuCores; $iThreads = $ix.CpuThreads; $iMhz = $ix.CpuMhz
             $iCpuAvg = $ix.CpuAvgPct; $iCpuP95 = $ix.CpuP95Pct; $iCpuMax = $ix.CpuMaxPct
+            $iTierDram = $ix.TierDramMB; $iTierNvme = $ix.TierNvmeMB
             while (-not $p.EndOfData) {
                 $f = $p.ReadFields()
                 if ($null -eq $f -or $f.Count -lt $cols) { continue }
@@ -161,7 +162,8 @@ try {
                 $acc = $h.buckets[$b]
                 if ($null -eq $acc) {
                     $acc = @{ w = 0L; avg = 0.0; cons = 0.0; consW = 0L; consMax = 0L; consMaxN = 0L; vms = 0L; assigned = 0L; p95 = 0L; max = 0L; balloon = 0L; swap = 0L; dram = 0L; nvme = 0L; dramTs = [long]::MinValue
-                        cpu = 0.0; cpuW = 0L; cpuP95 = 0.0; cpuMax = 0.0 }
+                        cpu = 0.0; cpuW = 0L; cpuP95 = 0.0; cpuMax = 0.0
+                        tDram = 0.0; tNvme = 0.0; tW = 0L }
                     $h.buckets[$b] = $acc
                 }
                 $acc.w += $samples
@@ -176,6 +178,14 @@ try {
                 $x = 0L; [void][long]::TryParse($f[$iMax], [ref]$x); if ($x -gt $acc.max) { $acc.max = $x }
                 $x = 0L; [void][long]::TryParse($f[$iBalloon], [ref]$x); if ($x -gt $acc.balloon) { $acc.balloon = $x }
                 $x = 0L; [void][long]::TryParse($f[$iSwap], [ref]$x); if ($x -gt $acc.swap) { $acc.swap = $x }
+                $x = 0L
+                $hasDram = [long]::TryParse($f[$iTierDram], [ref]$x)
+                if ($hasDram) {
+                    $acc.tDram += [double]$x * $samples
+                    $y = 0L; [void][long]::TryParse($f[$iTierNvme], [ref]$y)
+                    $acc.tNvme += [double]$y * $samples
+                    $acc.tW += $samples
+                }
                 $d = 0.0
                 if ([double]::TryParse($f[$iCpuAvg], [System.Globalization.NumberStyles]::Float, $script:Inv, [ref]$d)) {
                     $acc.cpu += $d * $samples
@@ -297,7 +307,9 @@ try {
                 (& $N $consAvg), (& $N $a.balloon), (& $N $a.swap), (& $N $a.dram), (& $N $consMax), (& $N $a.nvme),
                 (& $N $(if ($a.cpuW) { Get-Round1 ($a.cpu / $a.cpuW) } else { $null })),
                 (& $N $(if ($a.cpuW) { Get-Round1 $a.cpuP95 } else { $null })),
-                (& $N $(if ($a.cpuW) { Get-Round1 $a.cpuMax } else { $null })) -join ',') + ']'
+                (& $N $(if ($a.cpuW) { Get-Round1 $a.cpuMax } else { $null })),
+                (& $N $(if ($a.tW) { Get-RoundHalfUp ($a.tDram / $a.tW) } else { $null })),
+                (& $N $(if ($a.tW) { Get-RoundHalfUp ($a.tNvme / $a.tW) } else { $null })) -join ',') + ']'
         }
         $hostJson.Add(('{{"key":{0},"vc":{1},"name":{2},"cluster":{3},"tiering":{4},"dramMB":{5},"nvmeMB":{6},"physMB":{7},"cores":{8},"threads":{9},"mhz":{10},"s":[{11}]}}' -f
                 (& $J $h.key), (& $J $h.vc), (& $J $h.name), (& $J $h.cluster), (& $J $h.tiering),

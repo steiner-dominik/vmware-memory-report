@@ -325,7 +325,8 @@ footer a { color: var(--accent); }
   var HOUR = 3600, DAY = 86400;
   // host series columns
   var S_TS = 0, S_VMS = 1, S_ASSIGNED = 2, S_AVG = 3, S_P95 = 4, S_MAX = 5, S_CONS = 6, S_BALLOON = 7, S_SWAP = 8, S_DRAM = 9,
-      S_CONSMAX = 10, S_NVME = 11, S_CPU_AVG = 12, S_CPU_P95 = 13, S_CPU_MAX = 14;
+      S_CONSMAX = 10, S_NVME = 11, S_CPU_AVG = 12, S_CPU_P95 = 13, S_CPU_MAX = 14,
+      S_TIER_DRAM = 15, S_TIER_NVME = 16;
   // vm daily columns (V_MIN: minutes covered, from the 20 s samples - correct at any interval)
   var V_MIN = 0, V_AVG = 1, V_P95 = 2, V_MAX = 3, V_BALLOON = 4, V_SWAP = 5, V_CONS = 6, V_CONSMAX = 7;
 
@@ -925,7 +926,19 @@ footer a { color: var(--accent); }
   state.lang = store("memtier.lang") || (I18N[M.lang] ? M.lang : "en");
   if (store("memtier.mode") === "expert") state.mode = "expert";
   // The configured ratio is the starting point; the switch simulates the others.
-  state.tierPct = +(store("memtier.tierPct") || 0) || Math.round(CONFIG_RATIO * 100);
+  // Hosts that already run a tier know their own ratio; the configured one is only a fallback
+  // for fleets that have none. Snapped to the nearest offered choice.
+  var installed = (function () {
+    var dram = 0, nvme = 0;
+    // Only hosts that actually have a tier: averaging tiered and untiered hosts together
+    // would produce a ratio no host is running.
+    D.hosts.forEach(function (h) { if (h.nvmeMB) { dram += h.dramMB || 0; nvme += h.nvmeMB; } });
+    if (!dram || !nvme) return null;
+    var wanted = nvme / dram * 100, best = TIER_CHOICES[0];
+    TIER_CHOICES.forEach(function (c) { if (Math.abs(c - wanted) < Math.abs(best - wanted)) best = c; });
+    return best;
+  })();
+  state.tierPct = +(store("memtier.tierPct") || 0) || installed || Math.round(CONFIG_RATIO * 100);
   if (TIER_CHOICES.indexOf(state.tierPct) < 0) state.tierPct = 100;
   $("fLang").addEventListener("change", function () {
     state.lang = this.value; store("memtier.lang", state.lang);
@@ -938,14 +951,22 @@ footer a { color: var(--accent); }
 
   // Cold memory that is still in DRAM. On a host with an NVMe tier, consumed memory above DRAM
   // is already served by the tier: counting it as "cold in DRAM" would promise a saving twice.
-  function coldInDram(consMB, activeMB, dramMB) { return Math.max(0, Math.min(consMB, dramMB) - activeMB); }
-  function onNvme(consMB, dramMB, nvmeMB) { return nvmeMB ? Math.min(nvmeMB, Math.max(0, consMB - dramMB)) : 0; }
+  function coldInDram(consMB, activeMB, dramMB, tierDramMB) {
+    // vSphere 9 reports what each tier actually holds; before that it has to be derived from
+    // consumed memory, capped at DRAM so a tiered host's NVMe-resident pages are not counted twice.
+    var inDram = tierDramMB == null ? Math.min(consMB, dramMB) : tierDramMB;
+    return Math.max(0, inDram - activeMB);
+  }
+  function onNvme(consMB, dramMB, nvmeMB, tierNvmeMB) {
+    if (tierNvmeMB != null) return tierNvmeMB;
+    return nvmeMB ? Math.min(nvmeMB, Math.max(0, consMB - dramMB)) : 0;
+  }
 
   function hostStats(h, t0) {
     var col = metricCol(), vals = [], maxv = [], avgNum = 0, avgDen = 0, pts = [], balloon = 0, swap = 0, last = null;
     var consVals = [], consNum = 0, consDen = 0, actOnCons = 0, asgNum = 0, actOnAsg = 0;
     var coldNum = 0, coldN = 0, nvmeNum = 0, ratios = [], p95Vals = [], consPeaks = [];
-    var cpuVals = [], cpuP95Vals = [], cpuMaxOf = 0;
+    var cpuVals = [], cpuP95Vals = [], cpuMaxOf = 0, measured = false;
     for (var i = 0; i < h.s.length; i++) {
       var r = h.s[i]; if (r[S_TS] < t0) continue;
       var dram = r[S_DRAM] || h.dramMB; if (!dram) continue;
@@ -961,8 +982,9 @@ footer a { color: var(--accent); }
         consVals.push(consPct);
         consNum += r[S_CONS]; consDen += dram; actOnCons += r[S_AVG];
         ratios.push(r[S_AVG] / r[S_CONS] * 100);
-        coldNum += coldInDram(r[S_CONS], r[S_AVG], dram); coldN++;
-        nvmeNum += onNvme(r[S_CONS], dram, nvme);
+        coldNum += coldInDram(r[S_CONS], r[S_AVG], dram, r[S_TIER_DRAM]); coldN++;
+        nvmeNum += onNvme(r[S_CONS], dram, nvme, r[S_TIER_NVME]);
+        if (r[S_TIER_DRAM] != null) measured = true;
         consPeaks.push(r[S_CONSMAX] == null ? r[S_CONS] : r[S_CONSMAX]);
       }
       if (r[S_ASSIGNED]) { asgNum += r[S_ASSIGNED]; actOnAsg += r[S_AVG]; }
@@ -970,7 +992,7 @@ footer a { color: var(--accent); }
       pts.push({ t: r[S_TS], v: v, max: mx, avg: r[S_AVG] / dram * 100, activeMB: r[col], activeAvgMB: r[S_AVG],
         activeP95MB: r[S_P95] == null ? r[S_AVG] : r[S_P95], vms: r[S_VMS], assigned: r[S_ASSIGNED], dram: dram,
         consMB: r[S_CONS], consPct: consPct, consMaxMB: r[S_CONSMAX], nvme: nvme,
-        cpu: r[S_CPU_AVG], cpuP95: r[S_CPU_P95] });
+        cpu: r[S_CPU_AVG], cpuP95: r[S_CPU_P95], tierDram: r[S_TIER_DRAM], tierNvme: r[S_TIER_NVME] });
       last = r;
     }
     var st = { pts: pts, p95: p95(vals), max: maxOf(maxv), avg: avgDen ? avgNum / avgDen * 100 : null, balloon: balloon, swap: swap, last: last,
@@ -981,7 +1003,7 @@ footer a { color: var(--accent); }
       coldMB: coldN ? coldNum / coldN : null, nvmeUsedMB: coldN ? nvmeNum / coldN : null,
       activeSizeMB: p95(p95Vals), consPeakMB: maxOf(consPeaks),
       cpuAvg: cpuVals.length ? cpuVals.reduce(function (a, b) { return a + b; }, 0) / cpuVals.length : null,
-      cpuP95: p95(cpuP95Vals), cpuMax: cpuVals.length ? cpuMaxOf : null };
+      cpuP95: p95(cpuP95Vals), cpuMax: cpuVals.length ? cpuMaxOf : null, tierMeasured: measured };
     st.verdict = verdict(st.p95, st.max);
     st.candidate = candidateVerdict(st.activeOverCons);
     // Out of memory but not out of CPU: this host gains capacity from a tier, not from a socket.
@@ -1221,7 +1243,7 @@ footer a { color: var(--accent); }
       x.st.pts.forEach(function (p) {
         if (p.consMB != null) {
           fCons += p.consMB; fActOnCons += p.activeAvgMB;
-          coldByTs[p.t] = (coldByTs[p.t] || 0) + coldInDram(p.consMB, p.activeAvgMB, p.dram);
+          coldByTs[p.t] = (coldByTs[p.t] || 0) + coldInDram(p.consMB, p.activeAvgMB, p.dram, p.tierDram);
         }
         if (p.assigned) { fAsg += p.assigned; fActOnAsg += p.activeAvgMB; }
       });
@@ -1269,8 +1291,8 @@ footer a { color: var(--accent); }
           [t("ttActive"), szu(p.activeMB)],
           [t("ttConsumed"), p.consPct == null ? "–" : pct(p.consPct) + " • " + szu(p.consMB)],
           [t("fActCons"), p.consMB ? pct(p.activeAvgMB / p.consMB * 100) : "–"],
-          [t("fCold"), p.consMB == null ? "–" : szu(coldInDram(p.consMB, p.activeAvgMB, p.dram))],
-          [t("ttOnNvme"), p.nvme ? szu(onNvme(p.consMB, p.dram, p.nvme)) : "–"],
+          [t("fCold"), p.consMB == null ? "–" : szu(coldInDram(p.consMB, p.activeAvgMB, p.dram, p.tierDram))],
+          [t("ttOnNvme"), p.tierNvme != null || p.nvme ? szu(onNvme(p.consMB, p.dram, p.nvme, p.tierNvme)) : "–"],
           [t("ttVmsOn"), num(p.vms)], [t("ttAssigned"), szu(p.assigned)]];
       }, function (p) { return p.consPct; }, hostTop);
     });
@@ -1289,8 +1311,8 @@ footer a { color: var(--accent); }
         a.mem += p.dram + p.nvme; a.bigMem = Math.max(a.bigMem, p.dram + p.nvme); a.nvme += p.nvme;
         if (p.consMB != null) {
           a.cons += p.consMB; a.consMax += (p.consMaxMB == null ? p.consMB : p.consMaxMB); a.consN++;
-          a.cold += coldInDram(p.consMB, p.activeAvgMB, p.dram);
-          a.onNvme += onNvme(p.consMB, p.dram, p.nvme);
+          a.cold += coldInDram(p.consMB, p.activeAvgMB, p.dram, p.tierDram);
+          a.onNvme += onNvme(p.consMB, p.dram, p.nvme, p.tierNvme);
         }
         a.n++;
       });

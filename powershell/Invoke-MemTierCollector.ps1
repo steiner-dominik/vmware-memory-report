@@ -123,6 +123,7 @@ function Invoke-VCenterCollection {
                 ConsumedAvgMB = $st.Consumed.Avg; ConsumedMaxMB = $st.Consumed.Max; BalloonMaxMB = $st.Balloon.Max; SwapUsedMaxMB = $st.Swap.Max
                 CpuCores = $h.Cores; CpuThreads = $h.Threads; CpuMhz = $h.Mhz
                 CpuAvgPct = $st.Cpu.Avg; CpuP95Pct = $st.Cpu.P95; CpuMaxPct = $st.Cpu.Max
+                TierDramMB = $st.Tier.Dram; TierNvmeMB = $st.Tier.Nvme
             })
         }
 

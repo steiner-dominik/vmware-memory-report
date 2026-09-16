@@ -4,6 +4,50 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.09.07
+
+Memory tier usage is readable after all - from vSphere 9.
+
+- **`mem.tier.consumed.latest` is collected where it exists.** vCenter 9.1 publishes it
+  (level 2, so it arrives with the default statistics settings), keyed per instance by the
+  tier's own name - `DRAM`, `NVMe` - in MB. vCenter 8.0 U3 does not publish it, or any
+  other counter with "tier" in its name, which is why the discovery in 26.09.04 came back
+  empty against an 8.0 U3 host that *does* run a tier.
+- **Where it exists, the DRAM/NVMe split is measured instead of derived.** "Cold in DRAM"
+  becomes `tier DRAM consumed - active` rather than `min(consumed, DRAM) - active`, and
+  "on NVMe" is read rather than inferred. Older vCenters keep the derived estimate, which
+  is close: on a 9.1 host the measured DRAM figure matched `mem.consumed.average` to within
+  2 MB of 142 GB.
+- **The NVMe tier switch starts from the hardware.** Hosts that already run a tier know
+  their own ratio, so the switch defaults to it (snapped to the nearest offered value)
+  rather than to the configured one. Only hosts that actually have a tier are counted,
+  since averaging tiered and untiered hosts produces a ratio nobody is running.
+- New host CSV columns `TierDramMB` and `TierNvmeMB`, empty before vSphere 9.
+
+### Verified against real vCenters
+
+This release was tested against vCenter 8.0.3 (11 hosts, 521 VMs) and vCenter 9.1.1
+(6 hosts, 73 VMs), with both editions:
+
+| | 8.0.3 | 9.1.1 |
+|---|---|---|
+| counters offered | 749 | 875 |
+| counters matching "tier" | none | `mem.tier.consumed.latest`, `mem.tier.size.latest` |
+| `cpu.usage.average` | yes | yes |
+| `TierDramMB` / `TierNvmeMB` | empty, derived instead | measured |
+
+`mem.tier.size.latest` is a level 4 counter, so it is not collected by default and returns
+nothing; tier sizes keep coming from `hardware.memoryTierInfo`, which every 8.0 U3 and later
+host reports.
+
+### Not reachable remotely
+
+`vsish -e get /memory/tiers/N/info` and `memstats -r vmtier-stats` give per-tier free space
+and per-VM tier residency, but both are ESXi shell tools rather than esxcli namespaces, so
+neither is reachable through vCenter. Collecting them would mean SSH to every host, which
+this project deliberately does not do. `esxcli system tierdevice list` *is* reachable through
+the vim25 EsxCLI objects but only names the backing device, not its usage.
+
 ## 26.09.06
 
 Host CPU, and the case where a tier replaces a purchase.

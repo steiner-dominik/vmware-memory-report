@@ -116,9 +116,16 @@ class ReportDataTest(unittest.TestCase):
 
     def test_host_series_carries_the_nvme_tier_size(self):
         by_name = dict((h["name"], h) for h in self.data["hosts"])
-        self.assertEqual(len(by_name["esx1"]["s"][0]), 15)
+        self.assertEqual(len(by_name["esx1"]["s"][0]), 17)
         self.assertEqual(by_name["esx1"]["s"][0][11], 0)
         self.assertEqual(by_name["esx2"]["s"][0][11], 51200)   # per bucket, not only per host
+
+    def test_measured_tier_split_is_optional(self):
+        """Before vSphere 9 there is no per-tier counter, so those columns stay null."""
+        by_name = dict((h["name"], h) for h in self.data["hosts"])
+        for name in ("esx1", "esx2"):
+            self.assertIsNone(by_name[name]["s"][0][15])
+            self.assertIsNone(by_name[name]["s"][0][16])
 
     def test_vm_days_are_weighted_by_minutes(self):
         day = [d for d in self.data["vms"][0]["d"] if d][0]
