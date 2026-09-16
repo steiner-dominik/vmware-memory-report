@@ -15,7 +15,8 @@ $script:DataPlaceholder = '/*__MEMTIER_DATA__*/null'
 $script:HostFields = @(
     'Timestamp', 'WindowStart', 'VCenter', 'Cluster', 'VMHost', 'HostId', 'ConnectionState', 'MaintenanceMode',
     'TieringType', 'PhysicalMB', 'DramMB', 'NvmeTierMB', 'VMsOn', 'AssignedMB', 'Samples',
-    'ActiveAvgMB', 'ActiveP95MB', 'ActiveMaxMB', 'ConsumedAvgMB', 'ConsumedMaxMB', 'BalloonMaxMB', 'SwapUsedMaxMB'
+    'ActiveAvgMB', 'ActiveP95MB', 'ActiveMaxMB', 'ConsumedAvgMB', 'ConsumedMaxMB', 'BalloonMaxMB', 'SwapUsedMaxMB',
+    'CpuCores', 'CpuThreads', 'CpuMhz', 'CpuAvgPct', 'CpuP95Pct', 'CpuMaxPct'
 )
 $script:VmFields = @(
     'Timestamp', 'WindowStart', 'VCenter', 'Cluster', 'VMHost', 'VM', 'VMId', 'AssignedMB', 'ReservationMB',
@@ -85,6 +86,24 @@ function Get-MemTierP95 {
     if ($null -eq $Values -or $Values.Count -eq 0) { return $null }
     $Values.Sort()
     $Values[[int][math]::Ceiling(0.95 * $Values.Count) - 1]
+}
+
+function Get-MemTierPercentSummary {
+    # Reduce hundredth-of-a-percent CPU samples to avg/p95/max in percent.
+    param($Samples)
+    $valid = New-Object 'System.Collections.Generic.List[double]'
+    $sum = 0.0
+    if ($null -ne $Samples) {
+        foreach ($s in $Samples) {
+            if ($null -ne $s -and $s -ge 0) { $valid.Add([double]$s); $sum += [double]$s }
+        }
+    }
+    if ($valid.Count -eq 0) { return @{ Avg = $null; P95 = $null; Max = $null } }
+    $count = $valid.Count
+    $avg = Get-Round1 ($sum / $count / 100.0)
+    $p95 = Get-Round1 ((Get-MemTierP95 $valid) / 100.0)   # list is sorted now
+    $max = Get-Round1 ($valid[$count - 1] / 100.0)
+    @{ Avg = $avg; P95 = $p95; Max = $max }
 }
 
 function Get-MemTierSummary {
@@ -330,6 +349,9 @@ function ConvertTo-MemTierJson {
 # Requires PowerCLI to be loaded - see Import-MemTierPowerCLI.
 # ---------------------------------------------------------------------------
 $script:HostCounters = @('mem.active.average', 'mem.consumed.average', 'mem.vmmemctl.average', 'mem.swapused.average')
+# CPU answers one question: is a host out of memory while its CPUs idle? That host gains capacity
+# from a tier instead of from another socket. Optional - a vCenter without them still reports memory.
+$script:HostCpuCounters = @('cpu.usage.average')
 $script:VmCounters = @('mem.active.average', 'mem.consumed.average', 'mem.vmmemctl.average', 'mem.swapped.average')
 
 function Import-MemTierPowerCLI {
@@ -388,7 +410,7 @@ function Get-MemTierInventory {
     foreach ($c in @(Get-View -Server $VI -ViewType ClusterComputeResource -Property Name)) {
         if ($c) { $clusterNames[$c.MoRef.Value] = $c.Name }
     }
-    $hostViews = @(Get-View -Server $VI -ViewType HostSystem -Property Name, Parent, Hardware.MemorySize, Runtime.ConnectionState, Runtime.InMaintenanceMode | Where-Object { $_ })
+    $hostViews = @(Get-View -Server $VI -ViewType HostSystem -Property Name, Parent, Hardware.MemorySize, Runtime.ConnectionState, Runtime.InMaintenanceMode, Hardware.CpuInfo | Where-Object { $_ })
     $tierViews = @{}
     try {
         foreach ($t in @(Get-View -Server $VI -ViewType HostSystem -Property Hardware.MemoryTieringType, Hardware.MemoryTierInfo -ErrorAction Stop)) {
@@ -422,6 +444,9 @@ function Get-MemTierInventory {
         $hostMeta[$mid] = @{
             MoRef = $h.MoRef; Name = $h.Name; Cluster = $cluster; State = [string]$h.Runtime.ConnectionState
             Maint = [bool]$h.Runtime.InMaintenanceMode; Phys = $physMB; Dram = $dramMB; Nvme = $nvmeMB; Tiering = $tiering
+            Cores = if ($h.Hardware -and $h.Hardware.CpuInfo) { [long]$h.Hardware.CpuInfo.NumCpuCores } else { $null }
+            Threads = if ($h.Hardware -and $h.Hardware.CpuInfo) { [long]$h.Hardware.CpuInfo.NumCpuThreads } else { $null }
+            Mhz = if ($h.Hardware -and $h.Hardware.CpuInfo -and $h.Hardware.CpuInfo.Hz) { Get-RoundHalfUp ([double]$h.Hardware.CpuInfo.Hz / 1000000.0) } else { $null }
             VmsOn = 0L; Assigned = 0L
         }
     }
@@ -471,6 +496,14 @@ function Get-MemTierCounterIndex {
         $index['{0}.{1}.{2}' -f $c.GroupInfo.Key, $c.NameInfo.Key, $c.RollupType] = [int]$c.Key
     }
     $index
+}
+
+function Get-MemTierOptionalCounterIds {
+    # Like Get-MemTierCounterIds, but silently drops counters this vCenter does not publish.
+    param([string[]]$Names, $Index)
+    $ids = [ordered]@{}
+    foreach ($n in $Names) { if ($Index.Contains($n)) { $ids[$n] = $Index[$n] } }
+    $ids
 }
 
 function Get-MemTierCounterIds {
@@ -566,6 +599,11 @@ function Get-MemTierStatistics {
     $perfManager = Get-View -Server $VI -Id $si.Content.PerfManager
     $counterIndex = Get-MemTierCounterIndex $perfManager
     $hostCounterIds = Get-MemTierCounterIds $perfManager $script:HostCounters $counterIndex
+    $hostCpuIds = Get-MemTierOptionalCounterIds $script:HostCpuCounters $counterIndex
+    foreach ($k in $hostCpuIds.Keys) { $hostCounterIds[$k] = $hostCpuIds[$k] }
+    if ($hostCpuIds.Count -eq 0) {
+        Write-MemTierLog ("this vCenter does not publish {0} - the CPU columns stay empty" -f ($script:HostCpuCounters -join ', '))
+    }
     $vmCounterIds = Get-MemTierCounterIds $perfManager $script:VmCounters $counterIndex
 
     $liveHosts = @($Inventory.HostMeta.Values | Where-Object { $_.State -eq 'connected' } | ForEach-Object { $_.MoRef })
@@ -590,6 +628,7 @@ function Get-MemTierStatistics {
                 Consumed = Get-MemTierSummary $series['mem.consumed.average']
                 Balloon = Get-MemTierSummary $series['mem.vmmemctl.average']
                 Swap = Get-MemTierSummary $series[$pass.Swap]
+                Cpu = Get-MemTierPercentSummary $series['cpu.usage.average']
             }
         }
         $out[$pass.Kind + 'Failed'] = $failed.Count
@@ -599,5 +638,5 @@ function Get-MemTierStatistics {
 
 function Get-MemTierEmptyStats {
     $empty = @{ Avg = $null; P95 = $null; Max = $null; Samples = 0 }
-    @{ Active = $empty; Consumed = $empty; Balloon = $empty; Swap = $empty }
+    @{ Active = $empty; Consumed = $empty; Balloon = $empty; Swap = $empty; Cpu = $empty }
 }

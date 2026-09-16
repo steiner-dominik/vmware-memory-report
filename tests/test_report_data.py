@@ -107,15 +107,16 @@ class ReportDataTest(unittest.TestCase):
 
     def test_meta_carries_the_decision_thresholds(self):
         meta = self.data["meta"]
-        self.assertEqual(self.data["schema"], 3)
-        for key in ("candidatePct", "thresholdPct", "tierRatio", "intervalMinutes", "lang"):
+        self.assertEqual(self.data["schema"], 4)
+        for key in ("candidatePct", "thresholdPct", "tierRatio", "intervalMinutes", "lang",
+                    "ramBoundPct", "cpuIdlePct"):
             self.assertIn(key, meta)
         self.assertEqual(meta["candidatePct"], 40)
         self.assertEqual(meta["intervalMinutes"], 60)
 
     def test_host_series_carries_the_nvme_tier_size(self):
         by_name = dict((h["name"], h) for h in self.data["hosts"])
-        self.assertEqual(len(by_name["esx1"]["s"][0]), 12)
+        self.assertEqual(len(by_name["esx1"]["s"][0]), 15)
         self.assertEqual(by_name["esx1"]["s"][0][11], 0)
         self.assertEqual(by_name["esx2"]["s"][0][11], 51200)   # per bucket, not only per host
 

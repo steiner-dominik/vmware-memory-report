@@ -325,7 +325,7 @@ footer a { color: var(--accent); }
   var HOUR = 3600, DAY = 86400;
   // host series columns
   var S_TS = 0, S_VMS = 1, S_ASSIGNED = 2, S_AVG = 3, S_P95 = 4, S_MAX = 5, S_CONS = 6, S_BALLOON = 7, S_SWAP = 8, S_DRAM = 9,
-      S_CONSMAX = 10, S_NVME = 11;
+      S_CONSMAX = 10, S_NVME = 11, S_CPU_AVG = 12, S_CPU_P95 = 13, S_CPU_MAX = 14;
   // vm daily columns (V_MIN: minutes covered, from the 20 s samples - correct at any interval)
   var V_MIN = 0, V_AVG = 1, V_P95 = 2, V_MAX = 3, V_BALLOON = 4, V_SWAP = 5, V_CONS = 6, V_CONSMAX = 7;
 
@@ -338,6 +338,8 @@ footer a { color: var(--accent); }
   // never the candidate verdict, which is active over consumed memory and independent of the ratio.
   function ratio() { return state.tierPct / 100; }
   var INTERVAL = M.intervalMinutes || 60;
+  var RAM_BOUND = M.ramBoundPct == null ? 70 : M.ramBoundPct;   // consumed at/above this % of DRAM
+  var CPU_IDLE = M.cpuIdlePct == null ? 50 : M.cpuIdlePct;      // ...while CPU stays at/below this %
 
   var state = { mode: "simple", tierPct: 100, range: "all", vc: "", cluster: "", metric: "p95", units: "auto", lang: "en", vmSort: { key: "p95", dir: -1 }, vmPage: 0, hostSort: { key: "actCons", dir: 1 }, runSort: { key: "ts", dir: -1 }, clusterSort: { key: "actCons", dir: 1 }, sizingSort: { key: "saving", dir: -1 } };
   // ---------- translations ----------
@@ -358,6 +360,12 @@ footer a { color: var(--accent); }
       sizingFailure: "Sizing reserves capacity for the selected failure, so the hot set still fits the DRAM that survives it.",
       verdictAfterFail: "The hot set fits today, but after the selected failure {0} cluster(s) would need more than {1}% of the DRAM left. " +
         "A tier would start serving hot pages exactly when the cluster is already degraded.",
+      kTierNotHost: "Tier instead of a new host", kTierNotHostSub: "hosts with memory at or above {0}% of DRAM while CPU stays under {1}%",
+      verdictTierNotHost: "{0} of {1} hosts are out of memory but not out of CPU (consumed ≥ {2}% of DRAM, CPU P95 ≤ {3}%). " +
+        "Those gain capacity from a tier rather than from another socket.",
+      thCpuP95: "CPU P95", thCores: "Cores", thTierNotHost: "Tier not host", yes: "yes",
+      ttCpuP95: "95th percentile of host CPU usage over the time range",
+      ttTierNotHost: "Memory is full while the CPUs are not: adding an NVMe tier buys capacity without buying a host",
       fMode: "View", fTier: "NVMe tier", mSimple: "Simple", mExpert: "Everything",
       verdictHead: "{0} – {1} of the memory your hosts back is cold",
       verdictBody: "Active memory is {0} of consumed memory, so about {1} sits in DRAM without being touched. " +
@@ -534,6 +542,12 @@ footer a { color: var(--accent); }
       sizingFailure: "Das Sizing hält Kapazität für den gewählten Ausfall frei, damit der heiße Anteil auch in das verbleibende DRAM passt.",
       verdictAfterFail: "Heute passt der heiße Anteil, nach dem gewählten Ausfall bräuchten aber {0} Cluster mehr als {1} % des " +
         "verbleibenden DRAM. Ein Tier würde dann genau dann heiße Seiten bedienen, wenn der Cluster ohnehin schon degradiert ist.",
+      kTierNotHost: "Tier statt neuem Host", kTierNotHostSub: "Hosts mit Speicher ab {0} % des DRAM, während die CPU unter {1} % bleibt",
+      verdictTierNotHost: "{0} von {1} Hosts sind am Speicherlimit, aber nicht am CPU-Limit (belegt ≥ {2} % des DRAM, CPU-P95 ≤ {3} %). " +
+        "Diese gewinnen Kapazität durch ein Tier statt durch einen weiteren Sockel.",
+      thCpuP95: "CPU P95", thCores: "Kerne", thTierNotHost: "Tier statt Host", yes: "ja",
+      ttCpuP95: "95. Perzentil der CPU-Auslastung des Hosts über den Zeitraum",
+      ttTierNotHost: "Der Speicher ist voll, die CPUs sind es nicht: Ein NVMe-Tier bringt Kapazität, ohne einen Host zu kaufen",
       fMode: "Ansicht", fTier: "NVMe-Tier", mSimple: "Einfach", mExpert: "Alles",
       verdictHead: "{0} – {1} des von den Hosts hinterlegten Speichers ist kalt",
       verdictBody: "Der aktive Speicher beträgt {0} des belegten Speichers, rund {1} liegen also im DRAM, ohne " +
@@ -931,6 +945,7 @@ footer a { color: var(--accent); }
     var col = metricCol(), vals = [], maxv = [], avgNum = 0, avgDen = 0, pts = [], balloon = 0, swap = 0, last = null;
     var consVals = [], consNum = 0, consDen = 0, actOnCons = 0, asgNum = 0, actOnAsg = 0;
     var coldNum = 0, coldN = 0, nvmeNum = 0, ratios = [], p95Vals = [], consPeaks = [];
+    var cpuVals = [], cpuP95Vals = [], cpuMaxOf = 0;
     for (var i = 0; i < h.s.length; i++) {
       var r = h.s[i]; if (r[S_TS] < t0) continue;
       var dram = r[S_DRAM] || h.dramMB; if (!dram) continue;
@@ -951,9 +966,11 @@ footer a { color: var(--accent); }
         consPeaks.push(r[S_CONSMAX] == null ? r[S_CONS] : r[S_CONSMAX]);
       }
       if (r[S_ASSIGNED]) { asgNum += r[S_ASSIGNED]; actOnAsg += r[S_AVG]; }
+      if (r[S_CPU_AVG] != null) { cpuVals.push(r[S_CPU_AVG]); cpuP95Vals.push(r[S_CPU_P95]); cpuMaxOf = Math.max(cpuMaxOf, r[S_CPU_MAX] || 0); }
       pts.push({ t: r[S_TS], v: v, max: mx, avg: r[S_AVG] / dram * 100, activeMB: r[col], activeAvgMB: r[S_AVG],
         activeP95MB: r[S_P95] == null ? r[S_AVG] : r[S_P95], vms: r[S_VMS], assigned: r[S_ASSIGNED], dram: dram,
-        consMB: r[S_CONS], consPct: consPct, consMaxMB: r[S_CONSMAX], nvme: nvme });
+        consMB: r[S_CONS], consPct: consPct, consMaxMB: r[S_CONSMAX], nvme: nvme,
+        cpu: r[S_CPU_AVG], cpuP95: r[S_CPU_P95] });
       last = r;
     }
     var st = { pts: pts, p95: p95(vals), max: maxOf(maxv), avg: avgDen ? avgNum / avgDen * 100 : null, balloon: balloon, swap: swap, last: last,
@@ -962,9 +979,15 @@ footer a { color: var(--accent); }
       activeOverConsP95: p95(ratios),
       activeOverAssigned: asgNum ? actOnAsg / asgNum * 100 : null,
       coldMB: coldN ? coldNum / coldN : null, nvmeUsedMB: coldN ? nvmeNum / coldN : null,
-      activeSizeMB: p95(p95Vals), consPeakMB: maxOf(consPeaks) };
+      activeSizeMB: p95(p95Vals), consPeakMB: maxOf(consPeaks),
+      cpuAvg: cpuVals.length ? cpuVals.reduce(function (a, b) { return a + b; }, 0) / cpuVals.length : null,
+      cpuP95: p95(cpuP95Vals), cpuMax: cpuVals.length ? cpuMaxOf : null };
     st.verdict = verdict(st.p95, st.max);
     st.candidate = candidateVerdict(st.activeOverCons);
+    // Out of memory but not out of CPU: this host gains capacity from a tier, not from a socket.
+    st.ramBound = st.consAvg != null && st.consAvg >= RAM_BOUND;
+    st.cpuIdle = st.cpuP95 != null && st.cpuP95 <= CPU_IDLE;
+    st.tierInsteadOfHost = st.ramBound && st.cpuIdle;
     return st;
   }
   function verdict(p, mx) {
@@ -1127,7 +1150,7 @@ footer a { color: var(--accent); }
   }
 
   // One sentence at the top: is this fleet worth tiering, and what would it give back?
-  function renderVerdict(clist, actOverCons, coldMB, saving, headroom) {
+  function renderVerdict(clist, actOverCons, coldMB, saving, headroom, tierNotHost, hostCount) {
     var box = $("verdict");
     box.textContent = "";
     box.className = "card verdict";
@@ -1143,6 +1166,10 @@ footer a { color: var(--accent); }
     if (headroom > 0) worth.push(t("verdictHeadroom", szu(headroom)));
     body.appendChild(el("p", { class: "vb" },
       t("verdictBody", pct(actOverCons), szu(coldMB)) + (worth.length ? " " + worth.join(" ") : "")));
+    if (tierNotHost) {
+      body.appendChild(el("p", { class: "vn" },
+        t("verdictTierNotHost", num(tierNotHost), num(hostCount), thr(RAM_BOUND), thr(CPU_IDLE))));
+    }
     var bound = clist.filter(function (c) { return c.dramFit[1] === "warning"; }).length;
     if (bound) body.appendChild(el("p", { class: "vn" }, t("verdictBound", num(bound), thr(THR))));
     if (!bound) {
@@ -1206,6 +1233,12 @@ footer a { color: var(--accent); }
     kpi(t("kActCons"), pct(fCons ? fActOnCons / fCons * 100 : null), t("kActConsSub"));
     kpi(t("kCold"), coldStamps.length ? szu(coldSum / coldStamps.length) : "–", t("kColdSub"));
     kpi(t("kActConf"), pct(fAsg ? fActOnAsg / fAsg * 100 : null), t("kActConfSub"), true);
+    var tierNotHost = hs.filter(function (x) { return x.st.tierInsteadOfHost; });
+    var anyCpu = hs.some(function (x) { return x.st.cpuP95 != null; });
+    if (anyCpu) {
+      kpi(t("kTierNotHost"), num(tierNotHost.length) + " / " + num(hosts.length),
+        t("kTierNotHostSub", thr(RAM_BOUND), thr(CPU_IDLE)));
+    }
     kpi(t("kHosts"), num(hosts.length), tiered ? t("kHostsTiered", num(tiered)) : t("kHostsNoTier"), true);
     kpi(t("kVms"), num(vOn), t("kVmsSub", num(vTot), state.cluster ? t("kVmsAllClusters") : ""), true);
     kpi(t("kDram"), szu(dramTotal), nvmeTotal ? t("kDramNvme", szu(nvmeTotal)) : t("kDramPhys"), true);
@@ -1336,7 +1369,7 @@ footer a { color: var(--accent); }
     var bannerSaving = 0, bannerHeadroom = 0;
     clist.forEach(function (c) { if (c.sizing) { bannerSaving += c.sizing.saving; bannerHeadroom += c.sizing.headroom; } });
     renderVerdict(clist, fCons ? fActOnCons / fCons * 100 : null, coldStamps.length ? coldSum / coldStamps.length : null,
-      bannerSaving, bannerHeadroom);
+      bannerSaving, bannerHeadroom, tierNotHost.length, hosts.length);
     renderCandidates(clist);
     renderSizing(clist);
 
@@ -1601,7 +1634,9 @@ footer a { color: var(--accent); }
         vms: l ? l[S_VMS] : null, assigned: l ? l[S_ASSIGNED] : null, overcommit: l && h.dramMB ? l[S_ASSIGNED] / h.dramMB * 100 : null,
         avg: x.st.avg, p95: x.st.p95, max: x.st.max, balloon: x.st.balloon, swap: x.st.swap, verdict: x.st.verdict[0], vclass: x.st.verdict[1],
         consP95: x.st.consP95, actCons: x.st.activeOverCons, actAssigned: x.st.activeOverAssigned,
-        coldMB: x.st.coldMB, nvmeUsedMB: x.st.nvmeUsedMB, candidate: x.st.candidate };
+        coldMB: x.st.coldMB, nvmeUsedMB: x.st.nvmeUsedMB, candidate: x.st.candidate,
+        cpuAvg: x.st.cpuAvg, cpuP95: x.st.cpuP95, cores: h.cores, threads: h.threads,
+        tierNotHost: x.st.tierInsteadOfHost, tierNotHostLabel: x.st.tierInsteadOfHost ? 1 : 0 };
     });
     sortRows(rows, state.hostSort);
     renderTable($("hostTable"), [
@@ -1621,6 +1656,10 @@ footer a { color: var(--accent); }
       { key: "p95", label: t("thP95Of", metricLabel()), title: t("ttP95Metric"), num: true, render: function (td, r) { barCell(td, r.p95, THR); } },
       { key: "max", label: t("thActiveMax"), num: true, fmt: pct },
       { key: "consP95", label: t("thConsP95"), num: true, fmt: pct, title: t("ttConsP95Dram2") },
+      { key: "cpuP95", label: t("thCpuP95"), num: true, fmt: pct, title: t("ttCpuP95") },
+      { key: "cores", label: t("thCores"), num: true, fmt: function (v) { return v == null ? "\u2013" : num(v); } },
+      { key: "tierNotHostLabel", label: t("thTierNotHost"), title: t("ttTierNotHost"),
+        render: function (td, r) { if (r.tierNotHost) badgeCell(td, t("yes"), "good"); else td.textContent = "\u2013"; } },
       { key: "balloon", label: t("thBalloon"), num: true, fmt: num }, { key: "swap", label: t("thSwap"), num: true, fmt: num },
       { key: "verdict", label: t("thVerdict"), render: function (td, r) { badgeCell(td, r.verdict, r.vclass); } }
     ], rows.map(function (r) { r.candidateLabel = r.candidate[0]; return r; }), state.hostSort, render);

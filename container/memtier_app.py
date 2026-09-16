@@ -83,6 +83,8 @@ DEFAULTS = collections.OrderedDict([
     ("candidate_pct", 40.0),
     ("threshold_pct", 50.0),
     ("tier_ratio", 1.0),
+    ("ram_bound_pct", 70.0),
+    ("cpu_idle_pct", 50.0),
     ("cold_pct", 40.0),
     ("hot_pct", 75.0),
     ("stretched_cluster", False),
@@ -241,7 +243,8 @@ def load_settings(environ=None, options_file=OPTIONS_FILE):
     if values["ca_file"] and not os.path.isfile(values["ca_file"]):
         errors.append("ca_file: %s does not exist" % values["ca_file"])
     for name, low, high in (("report_days", 1, 400), ("candidate_pct", 1, 100), ("threshold_pct", 1, 100),
-                            ("tier_ratio", 0.1, 8), ("cold_pct", 0, 100),
+                            ("tier_ratio", 0.1, 8), ("ram_bound_pct", 1, 100), ("cpu_idle_pct", 1, 100),
+                            ("cold_pct", 0, 100),
                             ("hot_pct", 0, 100), ("retention_months", 0, 1200), ("timeout_seconds", 5, 3600),
                             ("batch_size", 1, 1000)):
         if not low <= values[name] <= high:
@@ -265,6 +268,7 @@ def memtier_config(settings):
         "report": {"report_dir": "reports", "days": str(s["report_days"]), "language": s["language"],
                    "candidate_pct": str(s["candidate_pct"]), "threshold_pct": str(s["threshold_pct"]),
                    "tier_ratio": str(s["tier_ratio"]),
+                   "ram_bound_pct": str(s["ram_bound_pct"]), "cpu_idle_pct": str(s["cpu_idle_pct"]),
                    "stretched_cluster": flag(s["stretched_cluster"]), "cold_pct": str(s["cold_pct"]),
                    "hot_pct": str(s["hot_pct"]), "title": s["title"], "support_contact": s["support_contact"]},
     })

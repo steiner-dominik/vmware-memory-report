@@ -4,6 +4,38 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.09.06
+
+Host CPU, and the case where a tier replaces a purchase.
+
+- **CPU usage and core counts are collected per host.** A host whose memory is full
+  while its CPUs idle gains capacity from an NVMe tier instead of from another socket -
+  the strongest "buy a tier, not a host" signal there is. New figure "Tier instead of a
+  new host", a badge in the host table, and CPU P95 and core columns. Thresholds are
+  `ram_bound_pct` (default 70% of DRAM consumed) and `cpu_idle_pct` (default 50% CPU P95).
+- A host that is memory bound *and* CPU bound is deliberately not flagged: on the mock
+  fleet the Branch hosts (memory 95-100%, CPU 23%) are flagged and the Compute hosts
+  (memory 73%, CPU 99%) are not, because those need a host rather than a tier.
+- **The CPU counter is optional.** A vCenter that does not publish `cpu.usage.average`
+  still produces the full memory report, with the CPU columns left empty and a log line
+  saying so.
+
+### Memory tier usage: the answer is no, at least on 8.0 U3
+
+The discovery added in 26.09.04 has run against a vCenter with tiering enabled. It
+enumerated 734 performance counters and **none** of them has "tier" in its name, so
+per-tier usage is not available through the performance API. `hardware.memoryTierInfo`
+still gives the tier *sizes*, which is what the report uses. Reading current usage means
+esxcli, which is per-host and reachable from both editions - the vim25 `EsxCLI` managed
+objects are not PowerCLI-only. Not implemented yet, pending the exact namespace.
+
+### Compatibility
+
+- Monthly host CSV files gain `CpuCores`, `CpuThreads`, `CpuMhz`, `CpuAvgPct`, `CpuP95Pct`
+  and `CpuMaxPct`, and are widened in place on the first run after the update.
+- The report payload is schema 4. Both builders still emit identical payloads for the
+  mock fleet, CPU columns included.
+
 ## 26.09.05
 
 Fixes the blank report shipped in 26.09.04.

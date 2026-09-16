@@ -44,6 +44,8 @@ param (
     [ValidateRange(1, 100)][double]$CandidatePct = 40,
     [ValidateRange(1, 100)][double]$ThresholdPct = 50,
     [ValidateRange(0.1, 8)][double]$TierRatio = 1.0,
+    [ValidateRange(1, 100)][double]$RamBoundPct = 70,
+    [ValidateRange(1, 100)][double]$CpuIdlePct = 50,
     [ValidateSet(15, 30, 60)][int]$IntervalMinutes = 60,
     [ValidateSet('en', 'de')][string]$Language = 'en',
     [switch]$StretchedCluster,
@@ -126,6 +128,8 @@ try {
             $iAvg = $ix.ActiveAvgMB; $iP95 = $ix.ActiveP95MB; $iMax = $ix.ActiveMaxMB; $iCons = $ix.ConsumedAvgMB; $iVms = $ix.VMsOn
             $iConsMax = $ix.ConsumedMaxMB
             $iAssigned = $ix.AssignedMB; $iBalloon = $ix.BalloonMaxMB; $iSwap = $ix.SwapUsedMaxMB
+            $iCores = $ix.CpuCores; $iThreads = $ix.CpuThreads; $iMhz = $ix.CpuMhz
+            $iCpuAvg = $ix.CpuAvgPct; $iCpuP95 = $ix.CpuP95Pct; $iCpuMax = $ix.CpuMaxPct
             while (-not $p.EndOfData) {
                 $f = $p.ReadFields()
                 if ($null -eq $f -or $f.Count -lt $cols) { continue }
@@ -145,6 +149,9 @@ try {
                     $h.lastTs = $ts; $h.name = $f[$iName]; $h.cluster = $f[$iCluster]; $h.tiering = $f[$iTier]
                     $nvme = 0L; [void][long]::TryParse($f[$iNvme], [ref]$nvme)
                     $h.dramMB = $dram; $h.nvmeMB = $nvme; $h.physMB = $phys
+                    $x = 0L; $h.cores = if ([long]::TryParse($f[$iCores], [ref]$x)) { $x } else { $null }
+                    $x = 0L; $h.threads = if ([long]::TryParse($f[$iThreads], [ref]$x)) { $x } else { $null }
+                    $x = 0L; $h.mhz = if ([long]::TryParse($f[$iMhz], [ref]$x)) { $x } else { $null }
                 }
                 $avg = 0L
                 if (-not [long]::TryParse($f[$iAvg], [ref]$avg)) { continue }
@@ -153,7 +160,8 @@ try {
                 $b = [long]([math]::Floor($ts / $bucket) * $bucket)
                 $acc = $h.buckets[$b]
                 if ($null -eq $acc) {
-                    $acc = @{ w = 0L; avg = 0.0; cons = 0.0; consW = 0L; consMax = 0L; consMaxN = 0L; vms = 0L; assigned = 0L; p95 = 0L; max = 0L; balloon = 0L; swap = 0L; dram = 0L; nvme = 0L; dramTs = [long]::MinValue }
+                    $acc = @{ w = 0L; avg = 0.0; cons = 0.0; consW = 0L; consMax = 0L; consMaxN = 0L; vms = 0L; assigned = 0L; p95 = 0L; max = 0L; balloon = 0L; swap = 0L; dram = 0L; nvme = 0L; dramTs = [long]::MinValue
+                        cpu = 0.0; cpuW = 0L; cpuP95 = 0.0; cpuMax = 0.0 }
                     $h.buckets[$b] = $acc
                 }
                 $acc.w += $samples
@@ -168,6 +176,15 @@ try {
                 $x = 0L; [void][long]::TryParse($f[$iMax], [ref]$x); if ($x -gt $acc.max) { $acc.max = $x }
                 $x = 0L; [void][long]::TryParse($f[$iBalloon], [ref]$x); if ($x -gt $acc.balloon) { $acc.balloon = $x }
                 $x = 0L; [void][long]::TryParse($f[$iSwap], [ref]$x); if ($x -gt $acc.swap) { $acc.swap = $x }
+                $d = 0.0
+                if ([double]::TryParse($f[$iCpuAvg], [System.Globalization.NumberStyles]::Float, $script:Inv, [ref]$d)) {
+                    $acc.cpu += $d * $samples
+                    $acc.cpuW += $samples
+                    $d2 = 0.0; [void][double]::TryParse($f[$iCpuP95], [System.Globalization.NumberStyles]::Float, $script:Inv, [ref]$d2)
+                    if ($d2 -gt $acc.cpuP95) { $acc.cpuP95 = $d2 }
+                    $d2 = 0.0; [void][double]::TryParse($f[$iCpuMax], [System.Globalization.NumberStyles]::Float, $script:Inv, [ref]$d2)
+                    if ($d2 -gt $acc.cpuMax) { $acc.cpuMax = $d2 }
+                }
                 # Per bucket, not per host: a host that gets a tier mid-range must not look tiered all along.
                 if ($ts -ge $acc.dramTs) {
                     $acc.dramTs = $ts; $acc.dram = $dram
@@ -277,11 +294,15 @@ try {
             $consAvg = if ($a.consW) { Get-RoundHalfUp ($a.cons / $a.consW) } else { $null }
             $consMax = if ($a.consMaxN) { $a.consMax } else { $null }
             '[' + ((& $N $b), (& $N $a.vms), (& $N $a.assigned), (& $N (Get-RoundHalfUp ($a.avg / $a.w))), (& $N $a.p95), (& $N $a.max),
-                (& $N $consAvg), (& $N $a.balloon), (& $N $a.swap), (& $N $a.dram), (& $N $consMax), (& $N $a.nvme) -join ',') + ']'
+                (& $N $consAvg), (& $N $a.balloon), (& $N $a.swap), (& $N $a.dram), (& $N $consMax), (& $N $a.nvme),
+                (& $N $(if ($a.cpuW) { Get-Round1 ($a.cpu / $a.cpuW) } else { $null })),
+                (& $N $(if ($a.cpuW) { Get-Round1 $a.cpuP95 } else { $null })),
+                (& $N $(if ($a.cpuW) { Get-Round1 $a.cpuMax } else { $null })) -join ',') + ']'
         }
-        $hostJson.Add(('{{"key":{0},"vc":{1},"name":{2},"cluster":{3},"tiering":{4},"dramMB":{5},"nvmeMB":{6},"physMB":{7},"s":[{8}]}}' -f
+        $hostJson.Add(('{{"key":{0},"vc":{1},"name":{2},"cluster":{3},"tiering":{4},"dramMB":{5},"nvmeMB":{6},"physMB":{7},"cores":{8},"threads":{9},"mhz":{10},"s":[{11}]}}' -f
                 (& $J $h.key), (& $J $h.vc), (& $J $h.name), (& $J $h.cluster), (& $J $h.tiering),
-                (& $N $h.dramMB), (& $N $h.nvmeMB), (& $N $h.physMB), (@($points) -join ',')))
+                (& $N $h.dramMB), (& $N $h.nvmeMB), (& $N $h.physMB),
+                (& $N $h.cores), (& $N $h.threads), (& $N $h.mhz), (@($points) -join ',')))
     }
 
     # VMs, ordered by (vCenter, lower-case name, key)
@@ -314,14 +335,15 @@ try {
                 (& $J ([string]$r['Message'])) -join ',') + ']')
     }
 
-    $meta = '{{"title":{0},"support":{1},"generatedUtc":{2},"fromUtc":{3},"toUtc":{4},"days":{5},"lang":{6},"candidatePct":{7},"thresholdPct":{8},"tierRatio":{9},"coldPct":{10},"hotPct":{11},"bucketHours":{12},"intervalMinutes":{13},"vcenters":[{14}],"builder":{15},"failover":{{"stretched":{16},"stretchedClusters":[{17}]}}}}' -f
+    $meta = '{{"title":{0},"support":{1},"generatedUtc":{2},"fromUtc":{3},"toUtc":{4},"days":{5},"lang":{6},"candidatePct":{7},"thresholdPct":{8},"tierRatio":{9},"coldPct":{10},"hotPct":{11},"ramBoundPct":{12},"cpuIdlePct":{13},"bucketHours":{14},"intervalMinutes":{15},"vcenters":[{16}],"builder":{17},"failover":{{"stretched":{18},"stretchedClusters":[{19}]}}}}' -f
         (& $J $Title), (& $J $SupportContact), (& $J (ConvertTo-MemTierIso $nowUtc)), (& $J (ConvertTo-MemTierIso $cutoffUtc)),
         (& $J (ConvertTo-MemTierIso $nowUtc)), (& $N $Days), (& $J $Language), (& $N $CandidatePct), (& $N $ThresholdPct),
-        (& $N $TierRatio), (& $N $ColdPct), (& $N $HotPct), (& $N $bucketHours), (& $N $IntervalMinutes),
+        (& $N $TierRatio), (& $N $ColdPct), (& $N $HotPct), (& $N $RamBoundPct), (& $N $CpuIdlePct),
+        (& $N $bucketHours), (& $N $IntervalMinutes),
         ((@($vcSet) | ForEach-Object { & $J $_ }) -join ','), (& $J "New-MemTierReport.ps1 $($script:MemTierVersion) (PowerShell $($PSVersionTable.PSVersion))"),
         $(if ($StretchedCluster) { 'true' } else { 'false' }), ((@($StretchedClusterName) | ForEach-Object { & $J $_ }) -join ',')
 
-    [void]$sb.Append('{"schema":3,"meta":').Append($meta)
+    [void]$sb.Append('{"schema":4,"meta":').Append($meta)
     [void]$sb.Append(',"runs":[').Append(($runJson -join ',')).Append(']')
     [void]$sb.Append(',"hosts":[').Append(($hostJson -join ',')).Append(']')
     [void]$sb.Append(',"vms":[').Append(($vmJson -join ',')).Append(']}')

@@ -45,6 +45,7 @@ A single look at vCenter won't tell you. Active memory swings with backups, batc
 * **Does it still fit after a failure?** Checked for N+1 and for stretched clusters (a whole site down).
 * **What about hosts that already have a tier?** Cold memory sitting on NVMe is *not* counted as a saving again — see the arithmetic below.
 * **Which VMs are oversized?** Worst-day active vs. configured memory per VM.
+* **Which hosts need a tier rather than a new host?** Memory full, CPUs idle — that host gains capacity from NVMe instead of from another socket.
 
 ## ✨ What you get
 
@@ -201,6 +202,17 @@ modules, up to 48 per host — and names one, e.g. `20 × 32 GB`. Rounding costs
 mock fleet it turns 4.07 TB of theoretical saving into 3.50 TB of buildable saving, which is the
 number worth quoting. Populating every channel is what gives the bandwidth, so the report prefers
 more, smaller modules over fewer, larger ones at the same total.
+
+### Memory full, CPU idle
+
+Host CPU is collected alongside memory for one reason: a host whose memory is full while its CPUs
+idle does not need another host, it needs more memory — which is exactly what a tier gives it.
+A host counts when consumed memory reaches `ram_bound_pct` of DRAM (default 70%) *and* CPU P95
+stays at or below `cpu_idle_pct` (default 50%). A host that is short of both is not flagged: that
+one really does need another host.
+
+`cpu.usage.average` is optional — a vCenter that does not publish it still produces the full
+memory report.
 
 ### What about failover?
 

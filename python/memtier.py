@@ -52,6 +52,7 @@ HOST_FIELDS = [
     "Timestamp", "WindowStart", "VCenter", "Cluster", "VMHost", "HostId", "ConnectionState", "MaintenanceMode",
     "TieringType", "PhysicalMB", "DramMB", "NvmeTierMB", "VMsOn", "AssignedMB", "Samples",
     "ActiveAvgMB", "ActiveP95MB", "ActiveMaxMB", "ConsumedAvgMB", "ConsumedMaxMB", "BalloonMaxMB", "SwapUsedMaxMB",
+    "CpuCores", "CpuThreads", "CpuMhz", "CpuAvgPct", "CpuP95Pct", "CpuMaxPct",
 ]
 VM_FIELDS = [
     "Timestamp", "WindowStart", "VCenter", "Cluster", "VMHost", "VM", "VMId", "AssignedMB", "ReservationMB",
@@ -64,6 +65,10 @@ RUN_FIELDS = [
 ]
 
 HOST_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.average", "mem.swapused.average"]
+# CPU is collected to answer one question: is a host out of memory while its CPUs idle? That host
+# gains capacity from a tier instead of from another socket. Optional on purpose - a vCenter that
+# does not publish them must still produce a memory report.
+HOST_CPU_COUNTERS = ["cpu.usage.average"]
 VM_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.average", "mem.swapped.average"]
 REALTIME_INTERVAL = 20
 # Supported collection intervals in minutes. 60 is plenty for a sizing decision; 15 and 30
@@ -124,6 +129,11 @@ candidate_pct = 40
 threshold_pct = 50
 # NVMe tier size relative to DRAM used for sizing (1.0 = the supported 1:1 maximum)
 tier_ratio = 1.0
+# A host is "out of memory but not out of CPU" when consumed memory is at or above
+# ram_bound_pct of its DRAM while CPU stays at or below cpu_idle_pct. Those hosts gain
+# capacity from an NVMe tier instead of from another socket.
+ram_bound_pct = 70
+cpu_idle_pct = 50
 # Stretched clusters (two sites): capacity after a failure is 50% of the cluster instead of N+1.
 # true = all clusters are stretched; or list the stretched clusters by name (comma separated)
 stretched_cluster = false
@@ -199,6 +209,16 @@ def p95(values):
     return ordered[int(math.ceil(0.95 * len(ordered))) - 1]
 
 
+def summarize_pct(values):
+    """Reduce hundredth-of-a-percent CPU samples to (avg, p95, max) in percent."""
+    valid = [v for v in values if v is not None and v >= 0]
+    if not valid:
+        return None, None, None
+    return (round1(sum(valid) / float(len(valid)) / 100.0),
+            round1(p95(valid) / 100.0),
+            round1(max(valid) / 100.0))
+
+
 def summarize_kb(values):
     """Reduce KB samples to (avg, p95, max) in MB; negative samples mean 'no data'."""
     valid = [v for v in values if v is not None and v >= 0]
@@ -226,6 +246,18 @@ def ensure_dir(path):
     except OSError as exc:
         if exc.errno != errno.EEXIST:
             raise
+
+
+def as_float(text):
+    if text is None:
+        return None
+    text = str(text).strip()
+    if text == "":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def as_int(text):
@@ -310,6 +342,8 @@ class Config(object):
         self.candidate_pct = parser.getfloat("report", "candidate_pct", fallback=40.0)
         self.threshold_pct = parser.getfloat("report", "threshold_pct", fallback=50.0)
         self.tier_ratio = parser.getfloat("report", "tier_ratio", fallback=1.0)
+        self.ram_bound_pct = parser.getfloat("report", "ram_bound_pct", fallback=70.0)
+        self.cpu_idle_pct = parser.getfloat("report", "cpu_idle_pct", fallback=50.0)
         self.stretched_cluster = to_bool(parser.get("report", "stretched_cluster", fallback="false"), False)
         self.stretched_clusters = [c.strip() for c in parser.get("report", "stretched_clusters", fallback="").split(",") if c.strip()]
         self.cold_pct = parser.getfloat("report", "cold_pct", fallback=40.0)
@@ -566,6 +600,11 @@ class ViJsonClient(object):
             raise MemTierError("performance counters not found on %s: %s" % (self.server, ", ".join(missing)))
         return dict((n, lookup[n]) for n in names)
 
+    def optional_counter_ids(self, names):
+        """Like counter_ids, but silently drops counters this vCenter does not publish."""
+        lookup = self.counter_lookup()
+        return dict((n, lookup[n]) for n in names if n in lookup)
+
     def counter_lookup(self):
         """{"group.name.rollup": counterId} for every counter this vCenter publishes, cached."""
         if self._counters is None:
@@ -738,7 +777,9 @@ def collect_vcenter(cfg, server, now):
 
         clusters = dict((mid, p.get("name")) for mid, p in client.retrieve("ClusterComputeResource", ["name"]))
         hosts = client.retrieve("HostSystem", ["name", "parent", "hardware.memorySize",
-                                               "runtime.connectionState", "runtime.inMaintenanceMode"])
+                                               "runtime.connectionState", "runtime.inMaintenanceMode",
+                                               "hardware.cpuInfo.numCpuCores", "hardware.cpuInfo.numCpuThreads",
+                                               "hardware.cpuInfo.hz"])
         tier_info = {}
         try:
             for mid, p in client.retrieve("HostSystem", ["hardware.memoryTieringType", "hardware.memoryTierInfo"]):
@@ -767,6 +808,9 @@ def collect_vcenter(cfg, server, now):
                 "name": p.get("name"), "cluster": cluster, "state": p.get("runtime.connectionState"),
                 "maint": bool(p.get("runtime.inMaintenanceMode")), "phys": phys_mb, "dram": dram_mb, "nvme": nvme_mb,
                 "tiering": (tier_info.get(mid) or {}).get("hardware.memoryTieringType") or "",
+                "cores": as_int(p.get("hardware.cpuInfo.numCpuCores")),
+                "threads": as_int(p.get("hardware.cpuInfo.numCpuThreads")),
+                "mhz": round_half_up((p.get("hardware.cpuInfo.hz") or 0) / 1000000.0) or None,
                 "vms_on": 0, "assigned": 0,
             }
 
@@ -816,6 +860,11 @@ def collect_vcenter(cfg, server, now):
             LOG.info("%s has hosts with an NVMe tier but publishes no counter with 'tier' in its name "
                      "(%d counters offered) - tier sizes are reported, current tier usage is not",
                      server, len(client.counter_lookup()))
+        cpu_counters = client.optional_counter_ids(HOST_CPU_COUNTERS)
+        if not cpu_counters:
+            LOG.info("%s does not publish %s - the CPU columns stay empty",
+                     server, ", ".join(HOST_CPU_COUNTERS))
+        host_counters = dict(host_counters, **cpu_counters)
         host_stats, host_failed = perf_batches(client, "HostSystem", live_hosts, host_counters, start, cfg.batch_size)
         vm_stats, vm_failed = perf_batches(client, "VirtualMachine", sorted(vm_meta), vm_counters, start, cfg.batch_size)
 
@@ -827,6 +876,7 @@ def collect_vcenter(cfg, server, now):
             c_avg, _, c_max, _ = summarize_kb(series.get("mem.consumed.average", []))
             _, _, b_max, _ = summarize_kb(series.get("mem.vmmemctl.average", []))
             _, _, s_max, _ = summarize_kb(series.get("mem.swapused.average", []))
+            cpu_avg, cpu_p95, cpu_max = summarize_pct(series.get("cpu.usage.average", []))
             if h["state"] == "connected" and not samples:
                 hosts_without += 1
             host_rows.append({
@@ -836,6 +886,8 @@ def collect_vcenter(cfg, server, now):
                 "VMsOn": h["vms_on"], "AssignedMB": h["assigned"], "Samples": samples,
                 "ActiveAvgMB": a_avg, "ActiveP95MB": a_p95, "ActiveMaxMB": a_max, "ConsumedAvgMB": c_avg,
                 "ConsumedMaxMB": c_max, "BalloonMaxMB": b_max, "SwapUsedMaxMB": s_max,
+                "CpuCores": h["cores"], "CpuThreads": h["threads"], "CpuMhz": h["mhz"],
+                "CpuAvgPct": cpu_avg, "CpuP95Pct": cpu_p95, "CpuMaxPct": cpu_max,
             })
 
         vms_without = counts["unreachable"]
@@ -946,7 +998,9 @@ def build_report_data(cfg, now, days, builder):
         # latest metadata wins
         h.update({"name": r["VMHost"], "cluster": r["Cluster"], "tiering": r.get("TieringType") or "",
                   "dramMB": as_int(r.get("DramMB")) or as_int(r.get("PhysicalMB")) or 0,
-                  "nvmeMB": as_int(r.get("NvmeTierMB")) or 0, "physMB": as_int(r.get("PhysicalMB")) or 0})
+                  "nvmeMB": as_int(r.get("NvmeTierMB")) or 0, "physMB": as_int(r.get("PhysicalMB")) or 0,
+                  "cores": as_int(r.get("CpuCores")), "threads": as_int(r.get("CpuThreads")),
+                  "mhz": as_int(r.get("CpuMhz"))})
         avg = as_int(r.get("ActiveAvgMB"))
         if avg is None:
             continue
@@ -956,7 +1010,8 @@ def build_report_data(cfg, now, days, builder):
         if acc is None:
             acc = h["buckets"][b] = {"w": 0, "avg": 0.0, "cons": 0.0, "cons_w": 0, "cons_max": 0, "cons_max_n": 0,
                                      "vms": 0, "assigned": 0, "p95": 0, "max": 0, "balloon": 0, "swap": 0,
-                                     "dram": 0, "nvme": 0}
+                                     "dram": 0, "nvme": 0,
+                                     "cpu": 0.0, "cpu_w": 0, "cpu_p95": 0.0, "cpu_max": 0.0}
             h["order"].append(b)
         acc["w"] += samples
         acc["avg"] += avg * samples
@@ -977,6 +1032,12 @@ def build_report_data(cfg, now, days, builder):
         acc["dram"] = as_int(r.get("DramMB")) or as_int(r.get("PhysicalMB")) or 0
         # Per bucket, not per host: a host that gets a tier mid-range must not look tiered all along.
         acc["nvme"] = as_int(r.get("NvmeTierMB")) or 0
+        cpu = as_float(r.get("CpuAvgPct"))
+        if cpu is not None:
+            acc["cpu"] += cpu * samples
+            acc["cpu_w"] += samples
+            acc["cpu_p95"] = max(acc["cpu_p95"], as_float(r.get("CpuP95Pct")) or 0.0)
+            acc["cpu_max"] = max(acc["cpu_max"], as_float(r.get("CpuMaxPct")) or 0.0)
 
     host_list = []
     for key in sorted(hosts, key=lambda k: (hosts[k]["vc"], hosts[k]["cluster"], hosts[k]["name"])):
@@ -987,9 +1048,13 @@ def build_report_data(cfg, now, days, builder):
             series.append([b, a["vms"], a["assigned"], round_half_up(a["avg"] / a["w"]), a["p95"], a["max"],
                            round_half_up(a["cons"] / a["cons_w"]) if a["cons_w"] else None,
                            a["balloon"], a["swap"], a["dram"],
-                           a["cons_max"] if a["cons_max_n"] else None, a["nvme"]])
+                           a["cons_max"] if a["cons_max_n"] else None, a["nvme"],
+                           round1(a["cpu"] / a["cpu_w"]) if a["cpu_w"] else None,
+                           round1(a["cpu_p95"]) if a["cpu_w"] else None,
+                           round1(a["cpu_max"]) if a["cpu_w"] else None])
         host_list.append({"key": key, "vc": h["vc"], "name": h["name"], "cluster": h["cluster"], "tiering": h["tiering"],
-                          "dramMB": h["dramMB"], "nvmeMB": h["nvmeMB"], "physMB": h["physMB"], "s": series})
+                          "dramMB": h["dramMB"], "nvmeMB": h["nvmeMB"], "physMB": h["physMB"],
+                          "cores": h.get("cores"), "threads": h.get("threads"), "mhz": h.get("mhz"), "s": series})
 
     # VMs -----------------------------------------------------------------
     day0 = cutoff_ts // 86400 * 86400
@@ -1055,11 +1120,12 @@ def build_report_data(cfg, now, days, builder):
 
     vcenters = sorted(set([h["vc"] for h in host_list] + [v["vc"] for v in vm_list] + [r[1] for r in runs]))
     return {
-        "schema": 3,
+        "schema": 4,
         "meta": {"title": cfg.title, "support": cfg.support_contact, "generatedUtc": iso(now), "fromUtc": iso(cutoff),
                  "toUtc": iso(now), "days": days, "lang": cfg.language, "candidatePct": json_num(cfg.candidate_pct),
                  "thresholdPct": json_num(cfg.threshold_pct), "tierRatio": json_num(cfg.tier_ratio),
-                 "coldPct": json_num(cfg.cold_pct), "hotPct": json_num(cfg.hot_pct), "bucketHours": bucket_hours,
+                 "coldPct": json_num(cfg.cold_pct), "hotPct": json_num(cfg.hot_pct), "ramBoundPct": json_num(cfg.ram_bound_pct),
+                 "cpuIdlePct": json_num(cfg.cpu_idle_pct), "bucketHours": bucket_hours,
                  "intervalMinutes": cfg.interval_minutes, "vcenters": vcenters, "builder": builder,
                  "failover": {"stretched": cfg.stretched_cluster, "stretchedClusters": cfg.stretched_clusters}},
         "runs": runs, "hosts": host_list, "vms": vm_list,
@@ -1090,8 +1156,8 @@ def cmd_report(cfg, args):
         cfg.stretched_cluster = True
     if args.stretched_clusters:
         cfg.stretched_clusters = [c.strip() for c in args.stretched_clusters.split(",") if c.strip()]
-    for name in ("threshold_pct", "candidate_pct", "tier_ratio", "cold_pct", "hot_pct", "language",
-                 "title", "support_contact", "template"):
+    for name in ("threshold_pct", "candidate_pct", "tier_ratio", "ram_bound_pct", "cpu_idle_pct",
+                 "cold_pct", "hot_pct", "language", "title", "support_contact", "template"):
         value = getattr(args, name, None)
         if value is not None:
             setattr(cfg, name, value)
@@ -1226,6 +1292,8 @@ def main(argv=None):
     rep.add_argument("--candidate-pct", type=float,
                      help="decision metric: a cluster counts as a tiering candidate at or below this %% of active over consumed memory")
     rep.add_argument("--tier-ratio", type=float, help="NVMe tier size relative to DRAM used for sizing (default 1.0 = 1:1)")
+    rep.add_argument("--ram-bound-pct", type=float, help="a host is memory bound at or above this %% of DRAM consumed")
+    rep.add_argument("--cpu-idle-pct", type=float, help="...and CPU idle at or below this %% CPU usage")
     rep.add_argument("--language", choices=sorted(LANGUAGES), help="report language (readers can switch it in the report)")
     rep.add_argument("--cold-pct", type=float, help="per-VM cold threshold, %% of configured memory (default from config)")
     rep.add_argument("--hot-pct", type=float, help="per-VM hot threshold, %% of configured memory (default from config)")

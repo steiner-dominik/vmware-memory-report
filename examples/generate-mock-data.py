@@ -13,7 +13,7 @@ Environment modelled:
     Compute          4 hosts,  768 GB          busy, nightly batch peaks above the 50% active guidance
     VDI              4 hosts,  512 GB + 512 GB NVMe tier (tiering on, consumed above DRAM)
   vcenter02.example.com
-    Branch           2 hosts,  384 GB
+    Branch           2 hosts,  384 GB          memory full, CPU idle -> tier instead of a new host
     (standalone)     1 witness host, 64 GB
 """
 
@@ -28,13 +28,14 @@ sys.path.insert(0, os.path.join(HERE, "..", "python"))
 import memtier as mt  # noqa: E402  (CSV schema and helpers shared with the collectors)
 
 CLUSTERS = [
-    # vcenter, cluster, hosts, DRAM GB, NVMe GB, active load, consumed load, host prefix
-    ("vcenter01.example.com", "Metro-Stretched", 8, 1024, 0, 0.16, 0.58, "esx-metro"),
-    ("vcenter01.example.com", "Compute", 4, 768, 0, 0.34, 0.62, "esx-comp"),
+    # vcenter, cluster, hosts, DRAM GB, NVMe GB, active load, consumed load, host prefix, cores, CPU load
+    ("vcenter01.example.com", "Metro-Stretched", 8, 1024, 0, 0.16, 0.58, "esx-metro", 64, 0.35),
+    ("vcenter01.example.com", "Compute", 4, 768, 0, 0.34, 0.62, "esx-comp", 48, 0.62),
     # Tiering already on: consumed is above DRAM, so part of it is served by the NVMe tier.
-    ("vcenter01.example.com", "VDI", 4, 512, 512, 0.22, 1.45, "esx-vdi"),
-    ("vcenter02.example.com", "Branch", 2, 384, 0, 0.12, 0.40, "esx-branch"),
-    ("vcenter02.example.com", "(standalone)", 1, 64, 0, 0.05, 0.20, "esx-witness"),
+    ("vcenter01.example.com", "VDI", 4, 512, 512, 0.22, 1.45, "esx-vdi", 32, 0.30),
+    # Memory full, CPU idle: the case where a tier buys capacity instead of another host.
+    ("vcenter02.example.com", "Branch", 2, 384, 0, 0.12, 0.82, "esx-branch", 24, 0.14),
+    ("vcenter02.example.com", "(standalone)", 1, 64, 0, 0.05, 0.20, "esx-witness", 8, 0.05),
 ]
 VM_PREFIXES = {"Metro-Stretched": ["app", "db", "web", "erp", "mq"], "Compute": ["batch", "sql", "etl", "cache"],
                "VDI": ["vdi-pool-a", "vdi-pool-b"], "Branch": ["fs", "print", "dc"], "(standalone)": ["witness"]}
@@ -56,11 +57,12 @@ def main():
     start = end - dt.timedelta(days=args.days)
 
     hosts, vms = [], []
-    for vc, cluster, count, dram_gb, nvme_gb, active, consumed, prefix in CLUSTERS:
+    for vc, cluster, count, dram_gb, nvme_gb, active, consumed, prefix, cores, cpu in CLUSTERS:
         for i in range(count):
             hosts.append({"vc": vc, "cluster": cluster, "name": "%s-%02d.example.com" % (prefix, i + 1),
                           "id": "host-%d" % (1000 + len(hosts)), "dram": dram_gb * 1024, "nvme": nvme_gb * 1024,
-                          "tier": "softwareTiering" if nvme_gb else "noTiering",
+                          "tier": "softwareTiering" if nvme_gb else "noTiering", "cores": cores,
+                          "cpu": cpu * rnd.uniform(0.9, 1.1),
                           "active": active * rnd.uniform(0.85, 1.25), "consumed": consumed * rnd.uniform(0.95, 1.05)})
     for h in hosts:
         prefixes = VM_PREFIXES[h["cluster"]]
@@ -120,6 +122,7 @@ def main():
             a = min(a, h["dram"] * 0.95)
             # Consumed can exceed DRAM only where a tier backs it, never the total memory.
             consumed_mb = int(min(h["dram"] + h["nvme"], h["dram"] * h["consumed"] * drift))
+            cpu_pct = min(98.0, h["cpu"] * business * 100.0 * rnd.uniform(0.9, 1.1))
             host_rows.append({
                 "Timestamp": mt.iso(ts), "WindowStart": mt.iso(ts - dt.timedelta(hours=1)), "VCenter": h["vc"], "Cluster": h["cluster"],
                 "VMHost": h["name"], "HostId": h["id"], "ConnectionState": "connected", "MaintenanceMode": "false",
@@ -127,7 +130,10 @@ def main():
                 "VMsOn": per_host[h["id"]][0], "AssignedMB": per_host[h["id"]][1], "Samples": 180,
                 "ActiveAvgMB": int(a), "ActiveP95MB": int(min(h["dram"], a * 1.1)), "ActiveMaxMB": int(min(h["dram"], a * 1.25)),
                 "ConsumedAvgMB": consumed_mb, "ConsumedMaxMB": int(min(h["dram"] + h["nvme"], consumed_mb * 1.03)),
-                "BalloonMaxMB": 0, "SwapUsedMaxMB": 0})
+                "BalloonMaxMB": 0, "SwapUsedMaxMB": 0,
+                "CpuCores": h["cores"], "CpuThreads": h["cores"] * 2, "CpuMhz": 2600,
+                "CpuAvgPct": mt.round1(cpu_pct), "CpuP95Pct": mt.round1(min(99.0, cpu_pct * 1.2)),
+                "CpuMaxPct": mt.round1(min(100.0, cpu_pct * 1.45))})
         runs = []
         for vc in sorted(set(h["vc"] for h in hosts)):
             vc_vms = [v for v in vms if v["vc"] == vc]
