@@ -32,11 +32,18 @@ function install(opts) {
   const registry = {};
   const advNodes = [];
   for (let i = 0; i < (opts.advCount || 0); i++) advNodes.push(mkNode("section"));
+  // Only ids the page really declares exist. A shim that invents nodes on demand hides the
+  // exact bug this harness is for: JavaScript still reaching for an element that was removed
+  // from the markup. The browser returns null there and the next property access throws.
+  const known = new Set(opts.ids || []);
   global.document = {
     documentElement: mkNode("html"),
     body: mkNode("body"),
     title: "",
-    getElementById: (id) => registry[id] || (registry[id] = mkNode("div")),
+    getElementById: (id) => {
+      if (!known.has(id)) return null;
+      return registry[id] || (registry[id] = mkNode("div"));
+    },
     createElement: mkNode,
     createElementNS: (ns, tag) => mkNode(tag),
     createTextNode: (txt) => ({ nodeType: 3, textContent: String(txt) }),

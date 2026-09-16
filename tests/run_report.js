@@ -11,8 +11,9 @@ const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[
 if (blocks.length < 2) { console.error("expected two inline scripts"); process.exit(2); }
 
 const advCount = (html.match(/data-adv/g) || []).length;
+const ids = [...html.matchAll(/\bid="([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
 const { registry, advNodes } = install({
-  advCount,
+  advCount, ids,
   store: { "memtier.mode": mode, "memtier.tierPct": tier, "memtier.lang": lang },
 });
 
@@ -25,6 +26,7 @@ const rows = (t) => { const out = []; t.children.forEach((sec) => sec.children.f
 
 console.log(JSON.stringify({
   mode, tier: +tier, lang,
+  ids: ids.length,
   advTotal: advNodes.length,
   advHidden: advNodes.filter((n) => n.hidden).length,
   verdict: text(registry.verdict || null),

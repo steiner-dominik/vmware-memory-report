@@ -4,6 +4,24 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.09.05
+
+Fixes the blank report shipped in 26.09.04.
+
+- **The report rendered as empty cards.** Removing the failover section in 26.09.04 left
+  two references to elements that went with it (`lgThr2`, `lgMetric2`). In a browser those
+  return `null`, and setting a property on `null` throws - before the first render, so the
+  whole page stayed empty. Both references are gone.
+- **The headless render harness was what let this through.** Its DOM shim invented an
+  element for any id asked of it, so the removed elements still "existed" in the test. It
+  now returns `null` for anything the markup does not declare, exactly as a browser does,
+  and reproduces the crash. A separate test fails the build if any `$("id")` in the script
+  has no matching `id=` in the markup.
+- **Tier counter discovery looks at every counter group**, not only `mem.*`. A narrow filter
+  would report "none available" when the counters were simply filed elsewhere. When nothing
+  matches, the log now also says how many counters the vCenter offered, so an empty result
+  can be told apart from a failed lookup.
+
 ## 26.09.04
 
 Everything in the report now has to earn its place by answering a tiering question.

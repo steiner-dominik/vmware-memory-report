@@ -587,9 +587,9 @@ class ViJsonClient(object):
         discovered rather than assumed. What is found is logged and reported, which is how the
         next release learns which ones to collect.
         """
-        found = sorted(n for n in self.counter_lookup()
-                       if n.startswith("mem.") and "tier" in n.lower())
-        return found
+        # Any group, not just mem.*: if a release files them elsewhere, a narrow filter would
+        # report "none available" when the counters are simply somewhere else.
+        return sorted(n for n in self.counter_lookup() if "tier" in n.lower())
 
     def query_perf(self, entity_type, counter_map, start):
         """Returns {entity_id: {counter_name: [values]}}; splits batches that fault and skips entities that fail alone."""
@@ -811,10 +811,11 @@ def collect_vcenter(cfg, server, now):
         vm_counters = client.counter_ids(VM_COUNTERS)
         tier_counters = client.tier_counters()
         if tier_counters:
-            LOG.info("%s publishes memory tier counters: %s", server, ", ".join(tier_counters))
+            LOG.info("%s publishes tiering counters: %s", server, ", ".join(tier_counters))
         elif any(h["nvme"] for h in host_meta.values()):
-            LOG.info("%s has hosts with an NVMe tier but publishes no mem.*tier* counters - "
-                     "tier sizes are reported, current tier usage is not available", server)
+            LOG.info("%s has hosts with an NVMe tier but publishes no counter with 'tier' in its name "
+                     "(%d counters offered) - tier sizes are reported, current tier usage is not",
+                     server, len(client.counter_lookup()))
         host_stats, host_failed = perf_batches(client, "HostSystem", live_hosts, host_counters, start, cfg.batch_size)
         vm_stats, vm_failed = perf_batches(client, "VirtualMachine", sorted(vm_meta), vm_counters, start, cfg.batch_size)
 

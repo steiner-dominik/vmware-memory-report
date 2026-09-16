@@ -894,7 +894,7 @@ footer a { color: var(--accent); }
     Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (n) { n.textContent = t(n.getAttribute("data-i18n")); });
     $("subtitle").textContent = t("subtitle", M.vcenters.join(", ") || "–", dt(tMin), dt(tMax),
       dt(Date.parse(M.generatedUtc) / 1000)) + (M.support ? " • " + t("support", "", "", "", M.support) : "");
-    $("lgThr").textContent = $("lgThr2").textContent = $("lgThr0").textContent = t("lgGuidance", thr(THR));
+    $("lgThr").textContent = $("lgThr0").textContent = t("lgGuidance", thr(THR));
     $("footer").textContent = t("footer", M.builder, num(M.bucketHours), num(INTERVAL), thr(CAND), thr(THR), tierLabel(),
       thr(M.coldPct), thr(M.hotPct));
     var q = $("vmSearch");
@@ -1160,7 +1160,7 @@ footer a { color: var(--accent); }
     var hosts = D.hosts.filter(hostVisible);
     resolveUnits(hosts);
     var hs = hosts.map(function (h) { return { h: h, st: hostStats(h, t0) }; });
-    $("lgMetric").textContent = $("lgMetric2").textContent = metricLabel();
+    $("lgMetric").textContent = metricLabel();
     Array.prototype.forEach.call(document.querySelectorAll(".lgMax"), function (n) { n.textContent = t("ttMax"); });
 
     // KPIs

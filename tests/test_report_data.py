@@ -286,6 +286,21 @@ class RenderTest(unittest.TestCase):
         self.assertLess(len(simple["kpis"]), len(expert["kpis"]))
         self.assertLess(len(simple["sizing"][0]), len(expert["sizing"][0]))
 
+    def test_no_javascript_reaches_for_a_removed_element(self):
+        """Every $("id") must exist in the markup.
+
+        Removing a section and leaving a reference behind returns null in the browser, and the
+        next property access throws - which silently blanks the whole report, because the
+        failure happens before the first render. Cheap to check, expensive to miss.
+        """
+        with io.open(TEMPLATE, encoding="utf-8") as handle:
+            html = handle.read()
+        js = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+        used = set(re.findall(r'\$\("([A-Za-z0-9_]+)"\)', js))
+        present = set(re.findall(r'\bid="([A-Za-z0-9_]+)"', html))
+        dangling = sorted(used - present)
+        self.assertEqual(dangling, [], "JavaScript references elements that do not exist: %s" % dangling)
+
     def test_verdict_names_the_decision_metric(self):
         r = self.render("simple")
         # active 7700 of consumed 76000 = 10.1%, so ~90% of what the hosts back is cold

@@ -494,7 +494,9 @@ function Get-MemTierTierCounters {
         discovered rather than assumed.
     #>
     param($Index)
-    @($Index.Keys | Where-Object { $_ -like 'mem.*' -and $_ -match 'tier' } | Sort-Object)
+    # Any group, not just mem.*: if a release files them elsewhere, a narrow filter would
+    # report "none available" when the counters are simply somewhere else.
+    @($Index.Keys | Where-Object { $_ -match 'tier' } | Sort-Object)
 }
 
 function Invoke-MemTierPerfQuery {
