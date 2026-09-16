@@ -85,6 +85,26 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(app_mod.window_minutes(0, 7200), 60)  # hosts keep one hour only
         self.assertEqual(app_mod.window_minutes(0, 20 * 60 + 10), 20)
         self.assertEqual(app_mod.window_minutes(0, 60), app_mod.MIN_WINDOW_MINUTES)
+        # A first run must not ask for more than the interval, or windows overlap.
+        self.assertEqual(app_mod.window_minutes(None, 1000, 15), 15)
+
+    def test_interval(self):
+        env = {"MEMTIER_DATA_DIR": self.tmp, "MEMTIER_SERVERS": "vc", "MEMTIER_USERNAME": "u",
+               "MEMTIER_PASSWORD": "p", "MEMTIER_INTERVAL_MINUTES": "15", "MEMTIER_CANDIDATE_PCT": "35",
+               "MEMTIER_TIER_RATIO": "1.5", "MEMTIER_LANGUAGE": "de"}
+        none = os.path.join(self.tmp, "none.json")
+        s = app_mod.load_settings(environ=env, options_file=none)
+        self.assertEqual(s.errors, [])
+        cfg = app_mod.memtier_config(s)
+        self.assertEqual((cfg.interval_minutes, cfg.window_minutes), (15, 15))
+        self.assertEqual((cfg.candidate_pct, cfg.tier_ratio, cfg.language), (35.0, 1.5, "de"))
+        app = app_mod.App(s)
+        app.last_started = 1000
+        self.assertEqual(app.next_run(), 1000 + 15 * 60)
+
+        bad = app_mod.load_settings(environ=dict(env, MEMTIER_INTERVAL_MINUTES="7"), options_file=none)
+        self.assertIn("interval_minutes", "\n".join(bad.errors))
+        self.assertEqual(bad.interval_minutes, 60)
 
 
 class MockDataTest(unittest.TestCase):
@@ -198,11 +218,14 @@ class EntityTest(unittest.TestCase):
         self.assertEqual(states["sensor.memtier_status"][0], "unconfigured")
         self.assertEqual(states["sensor.memtier_last_collection"][1]["device_class"], "timestamp")
         latest = {"timestamp": "2026-09-15T10:05:00Z", "hosts": 3, "hostsConnected": 2, "vmsOn": 7, "thresholdPct": 50,
+                  "activeOverConsumedPct": 28.0, "coldInDramMB": 4096,
                   "peak": {"pct": 41.5, "host": "esx1", "cluster": "C", "vcenter": "vc"},
                   "vcenters": [{"vcenter": "vc", "message": "perf query failed"}]}
         states = dict((e, (s, a)) for e, s, a in pub.states("partial", latest))
         self.assertEqual(states["sensor.memtier_hosts"][0], 2)
         self.assertEqual(states["sensor.memtier_peak_host_active"][0], 41.5)
+        self.assertEqual(states["sensor.memtier_active_of_consumed"][0], 28.0)
+        self.assertEqual(states["sensor.memtier_cold_in_dram"][0], 4096)
         self.assertIn("perf query failed", states["sensor.memtier_status"][1]["message"])
 
 

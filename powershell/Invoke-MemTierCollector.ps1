@@ -25,8 +25,14 @@
     Credential saved with: Get-Credential | Export-Clixml <file>
     (only readable by the same Windows user on the same machine).
     Without it, an existing PowerCLI session or Windows pass-through (SSPI) is used.
+.PARAMETER IntervalMinutes
+    Collection interval the scheduled task uses: 60, 30 or 15. Every run reads all 20-second
+    samples of its window, so a shorter interval does not find peaks an hourly run misses - it
+    gives a finer time resolution and loses less data when a single run fails (hosts keep only
+    about one hour of real-time samples).
 .PARAMETER WindowMinutes
-    Minutes of real-time data to read. Must match the schedule interval (max. 60).
+    Minutes of real-time data to read (max. 60). Defaults to IntervalMinutes; set it only to
+    cover a gap deliberately.
 .PARAMETER ReportDir
     Folder for MemTier_Report.html. Days, ThresholdPct, ColdPct, HotPct, Title, SupportContact,
     StretchedCluster and StretchedClusterName are passed on to New-MemTierReport.ps1.
@@ -45,14 +51,18 @@ param (
     [System.Management.Automation.PSCredential]$Credential,
     [string]$DataDir,
     [string]$LogDir,
-    [ValidateRange(5, 60)][int]$WindowMinutes = 60,
+    [ValidateSet(15, 30, 60)][int]$IntervalMinutes = 60,
+    [ValidateRange(5, 60)][int]$WindowMinutes,
     [string]$ExcludeVmPattern = '^vCLS-',
     [ValidateRange(1, 1000)][int]$BatchSize = 50,
     [int]$RetentionMonths = 13,
     [switch]$CompressOldMonths,
     [string]$ReportDir,
     [ValidateRange(1, 800)][int]$Days = 30,
-    [double]$ThresholdPct = 50,
+    [ValidateRange(1, 100)][double]$CandidatePct = 40,
+    [ValidateRange(1, 100)][double]$ThresholdPct = 50,
+    [ValidateRange(0.1, 8)][double]$TierRatio = 1.0,
+    [ValidateSet('en', 'de')][string]$Language = 'en',
     [double]$ColdPct = 40,
     [double]$HotPct = 75,
     [string]$Title,
@@ -65,6 +75,10 @@ param (
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'MemTier.Common.ps1')
+
+# The window has to match the schedule, otherwise consecutive runs overlap (double counting)
+# or leave a gap the hosts have already discarded.
+if (-not $PSBoundParameters.ContainsKey('WindowMinutes')) { $WindowMinutes = $IntervalMinutes }
 
 # "powershell.exe -File" (Task Scheduler) passes "vc01,vc02" as one string
 $VCenterServer = @($VCenterServer | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -186,9 +200,11 @@ finally {
 # Rebuild the report after the lock is released: a slow report must not block the next collection
 if (-not $NoReport) {
     $reportArgs = @{ DataDir = $DataDir; LogDir = $LogDir }
-    foreach ($name in 'ReportDir', 'Days', 'ThresholdPct', 'ColdPct', 'HotPct', 'Title', 'SupportContact', 'StretchedCluster', 'StretchedClusterName') {
+    foreach ($name in 'ReportDir', 'Days', 'CandidatePct', 'ThresholdPct', 'TierRatio', 'Language', 'ColdPct', 'HotPct',
+        'Title', 'SupportContact', 'StretchedCluster', 'StretchedClusterName') {
         if ($PSBoundParameters.ContainsKey($name)) { $reportArgs[$name] = $PSBoundParameters[$name] }
     }
+    $reportArgs['IntervalMinutes'] = $IntervalMinutes   # the report judges run coverage against it
     & (Join-Path $PSScriptRoot 'New-MemTierReport.ps1') @reportArgs
     if ($LASTEXITCODE -ne 0) { $exitCode = 1 }
 }

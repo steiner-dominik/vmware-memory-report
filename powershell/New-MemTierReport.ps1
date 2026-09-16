@@ -10,8 +10,9 @@
     every run; the CSV files keep the full history. Invoke-MemTierCollector.ps1
     calls this script after every collection.
 
-    The report shows per host and per cluster (N+1) how much of DRAM is actively
-    used over time, a weekday x hour heatmap, and per-VM worst-day P95 values.
+    The report leads with active memory as a share of consumed memory - the metric that
+    decides whether an NVMe tier has anything to move - and adds the sizing it implies,
+    failover headroom per cluster, a weekday x hour heatmap and per-VM worst-day P95 values.
 .PARAMETER Days
     Days of history to include (default 30).
 .PARAMETER StretchedCluster
@@ -19,9 +20,18 @@
     cluster) instead of the cluster without its largest host (N+1). The mode can also be switched in the report.
 .PARAMETER StretchedClusterName
     Names of the stretched clusters, if only some clusters are stretched.
+.PARAMETER CandidatePct
+    The decision metric: a cluster counts as a memory tiering candidate when active memory stays at
+    or below this % of consumed memory. Everything else is cold memory an NVMe tier can absorb.
 .PARAMETER ThresholdPct
-    Tiering guidance: host active memory should stay at or below this % of DRAM.
-    Broadcom's guidance for the default 1:1 DRAM:NVMe ratio is 50%.
+    Feasibility: the hot working set has to stay in DRAM. Broadcom's guidance for the default
+    1:1 DRAM:NVMe ratio is to keep host active memory at or below 50% of DRAM.
+.PARAMETER TierRatio
+    NVMe tier size relative to DRAM used for the sizing table (1.0 = the supported 1:1 maximum).
+.PARAMETER IntervalMinutes
+    Collection interval the data was captured with; only used to judge how complete the run history is.
+.PARAMETER Language
+    Report language: en or de. Every reader can switch it in the report itself.
 .EXAMPLE
     .\New-MemTierReport.ps1 -DataDir D:\MemTier\data -ReportDir D:\MemTier\reports -Days 30
 #>
@@ -31,14 +41,18 @@ param (
     [string]$ReportDir,
     [string]$LogDir,
     [ValidateRange(1, 800)][int]$Days = 30,
-    [double]$ThresholdPct = 50,
+    [ValidateRange(1, 100)][double]$CandidatePct = 40,
+    [ValidateRange(1, 100)][double]$ThresholdPct = 50,
+    [ValidateRange(0.1, 8)][double]$TierRatio = 1.0,
+    [ValidateSet(15, 30, 60)][int]$IntervalMinutes = 60,
+    [ValidateSet('en', 'de')][string]$Language = 'en',
     [switch]$StretchedCluster,
     [Alias('StretchedClusters')]
     [string[]]$StretchedClusterName = @(),
     [double]$ColdPct = 40,
     [double]$HotPct = 75,
     [string]$Title = 'VMware Memory Tiering Report',
-    [string]$SupportContact = 'dominik.steiner@nts.eu',
+    [string]$SupportContact = 'https://github.com/steiner-dominik/vmware-memory-report/issues',
     [string]$TemplatePath,
     [string]$OutputPath
 )
@@ -139,7 +153,7 @@ try {
                 $b = [long]([math]::Floor($ts / $bucket) * $bucket)
                 $acc = $h.buckets[$b]
                 if ($null -eq $acc) {
-                    $acc = @{ w = 0L; avg = 0.0; cons = 0.0; consW = 0L; consMax = 0L; consMaxN = 0L; vms = 0L; assigned = 0L; p95 = 0L; max = 0L; balloon = 0L; swap = 0L; dram = 0L; dramTs = [long]::MinValue }
+                    $acc = @{ w = 0L; avg = 0.0; cons = 0.0; consW = 0L; consMax = 0L; consMaxN = 0L; vms = 0L; assigned = 0L; p95 = 0L; max = 0L; balloon = 0L; swap = 0L; dram = 0L; nvme = 0L; dramTs = [long]::MinValue }
                     $h.buckets[$b] = $acc
                 }
                 $acc.w += $samples
@@ -154,7 +168,11 @@ try {
                 $x = 0L; [void][long]::TryParse($f[$iMax], [ref]$x); if ($x -gt $acc.max) { $acc.max = $x }
                 $x = 0L; [void][long]::TryParse($f[$iBalloon], [ref]$x); if ($x -gt $acc.balloon) { $acc.balloon = $x }
                 $x = 0L; [void][long]::TryParse($f[$iSwap], [ref]$x); if ($x -gt $acc.swap) { $acc.swap = $x }
-                if ($ts -ge $acc.dramTs) { $acc.dramTs = $ts; $acc.dram = $dram }
+                # Per bucket, not per host: a host that gets a tier mid-range must not look tiered all along.
+                if ($ts -ge $acc.dramTs) {
+                    $acc.dramTs = $ts; $acc.dram = $dram
+                    $x = 0L; [void][long]::TryParse($f[$iNvme], [ref]$x); $acc.nvme = $x
+                }
             }
         }
         finally { Close-MemTierCsv $csv }
@@ -197,11 +215,13 @@ try {
                 if ($samples -lt 1) { $samples = 1L }
                 $d = $v.days[$di]
                 if ($null -eq $d) {
-                    $d = @{ hours = 0L; num = 0.0; den = 0.0; p95 = (New-Object 'System.Collections.Generic.List[double]'); max = 0.0; balloon = 0L; swap = 0L
+                    $d = @{ minutes = 0.0; num = 0.0; den = 0.0; p95 = (New-Object 'System.Collections.Generic.List[double]'); max = 0.0; balloon = 0L; swap = 0L
                         cnum = 0.0; cden = 0.0; cmax = $null }
                     $v.days[$di] = $d
                 }
-                $d.hours++
+                # Minutes covered, derived from the 20-second samples: correct for any collection
+                # interval, where counting rows silently quadrupled the weight at 15-minute runs.
+                $d.minutes += [double]$samples * 20.0 / 60.0
                 $d.num += [double]$avg * $samples
                 $d.den += [double]$assigned * $samples
                 $x = 0L; [void][long]::TryParse($f[$iP95], [ref]$x); $d.p95.Add([double]$x * 100.0 / $assigned)
@@ -257,7 +277,7 @@ try {
             $consAvg = if ($a.consW) { Get-RoundHalfUp ($a.cons / $a.consW) } else { $null }
             $consMax = if ($a.consMaxN) { $a.consMax } else { $null }
             '[' + ((& $N $b), (& $N $a.vms), (& $N $a.assigned), (& $N (Get-RoundHalfUp ($a.avg / $a.w))), (& $N $a.p95), (& $N $a.max),
-                (& $N $consAvg), (& $N $a.balloon), (& $N $a.swap), (& $N $a.dram), (& $N $consMax) -join ',') + ']'
+                (& $N $consAvg), (& $N $a.balloon), (& $N $a.swap), (& $N $a.dram), (& $N $consMax), (& $N $a.nvme) -join ',') + ']'
         }
         $hostJson.Add(('{{"key":{0},"vc":{1},"name":{2},"cluster":{3},"tiering":{4},"dramMB":{5},"nvmeMB":{6},"physMB":{7},"s":[{8}]}}' -f
                 (& $J $h.key), (& $J $h.vc), (& $J $h.name), (& $J $h.cluster), (& $J $h.tiering),
@@ -277,7 +297,7 @@ try {
             if ($null -eq $d) { $daily.Add('null'); continue }
             $cAvg = if ($d.cden) { Get-Round1 ($d.cnum * 100.0 / $d.cden) } else { $null }
             $cMax = if ($null -ne $d.cmax) { Get-Round1 $d.cmax } else { $null }
-            $daily.Add('[' + ((& $N $d.hours), (& $N (Get-Round1 ($d.num * 100.0 / $d.den))), (& $N (Get-Round1 (Get-MemTierP95 $d.p95))),
+            $daily.Add('[' + ((& $N (Get-Round1 $d.minutes)), (& $N (Get-Round1 ($d.num * 100.0 / $d.den))), (& $N (Get-Round1 (Get-MemTierP95 $d.p95))),
                     (& $N (Get-Round1 $d.max)), (& $N $d.balloon), (& $N $d.swap), (& $N $cAvg), (& $N $cMax) -join ',') + ']')
         }
         $vmJson.Add(('{{"id":{0},"vc":{1},"name":{2},"cluster":{3},"host":{4},"assignedMB":{5},"reservationMB":{6},"latency":{7},"lastTs":{8},"day0":{9},"d":[{10}]}}' -f
@@ -294,13 +314,14 @@ try {
                 (& $J ([string]$r['Message'])) -join ',') + ']')
     }
 
-    $meta = '{{"title":{0},"support":{1},"generatedUtc":{2},"fromUtc":{3},"toUtc":{4},"days":{5},"thresholdPct":{6},"coldPct":{7},"hotPct":{8},"bucketHours":{9},"vcenters":[{10}],"builder":{11},"failover":{{"stretched":{12},"stretchedClusters":[{13}]}}}}' -f
+    $meta = '{{"title":{0},"support":{1},"generatedUtc":{2},"fromUtc":{3},"toUtc":{4},"days":{5},"lang":{6},"candidatePct":{7},"thresholdPct":{8},"tierRatio":{9},"coldPct":{10},"hotPct":{11},"bucketHours":{12},"intervalMinutes":{13},"vcenters":[{14}],"builder":{15},"failover":{{"stretched":{16},"stretchedClusters":[{17}]}}}}' -f
         (& $J $Title), (& $J $SupportContact), (& $J (ConvertTo-MemTierIso $nowUtc)), (& $J (ConvertTo-MemTierIso $cutoffUtc)),
-        (& $J (ConvertTo-MemTierIso $nowUtc)), (& $N $Days), (& $N $ThresholdPct), (& $N $ColdPct), (& $N $HotPct), (& $N $bucketHours),
+        (& $J (ConvertTo-MemTierIso $nowUtc)), (& $N $Days), (& $J $Language), (& $N $CandidatePct), (& $N $ThresholdPct),
+        (& $N $TierRatio), (& $N $ColdPct), (& $N $HotPct), (& $N $bucketHours), (& $N $IntervalMinutes),
         ((@($vcSet) | ForEach-Object { & $J $_ }) -join ','), (& $J "New-MemTierReport.ps1 $($script:MemTierVersion) (PowerShell $($PSVersionTable.PSVersion))"),
         $(if ($StretchedCluster) { 'true' } else { 'false' }), ((@($StretchedClusterName) | ForEach-Object { & $J $_ }) -join ',')
 
-    [void]$sb.Append('{"schema":2,"meta":').Append($meta)
+    [void]$sb.Append('{"schema":3,"meta":').Append($meta)
     [void]$sb.Append(',"runs":[').Append(($runJson -join ',')).Append(']')
     [void]$sb.Append(',"hosts":[').Append(($hostJson -join ',')).Append(']')
     [void]$sb.Append(',"vms":[').Append(($vmJson -join ',')).Append(']}')

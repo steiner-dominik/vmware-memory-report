@@ -58,7 +58,7 @@ param (
     [Alias('StretchedClusters')]
     [string[]]$StretchedClusterName = @(),
     [string]$Title = 'VMware Memory Tiering Snapshot',
-    [string]$SupportContact = 'dominik.steiner@nts.eu',
+    [string]$SupportContact = 'https://github.com/steiner-dominik/vmware-memory-report/issues',
     [string]$TemplatePath,
     [string]$CsvDelimiter,
     [switch]$PassThru

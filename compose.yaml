@@ -1,8 +1,9 @@
 # Standalone deployment (no Home Assistant):
-#   cp env.example .env   # fill in vCenter and a UI password
+#   cp .env.example .env   # fill in vCenter and a UI password
+#   (the release asset is named env.example - dotfiles are not attachable)
 #   docker compose up -d
 # Then open http://<docker-host>:8080. The first collection starts right away,
-# after that every hour; the report is rebuilt after every run.
+# after that every MEMTIER_INTERVAL_MINUTES; the report is rebuilt after every run.
 services:
   memtier:
     image: ghcr.io/steiner-dominik/vmware-memory-report:latest

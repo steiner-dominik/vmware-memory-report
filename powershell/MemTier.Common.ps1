@@ -7,7 +7,7 @@
     The CSV schema and all calculations are identical to python/memtier.py.
 #>
 
-$script:MemTierVersion = '1.0.0'
+$script:MemTierVersion = '1.1.0'
 $script:Inv = [System.Globalization.CultureInfo]::InvariantCulture
 $script:IsoFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
 $script:DataPlaceholder = '/*__MEMTIER_DATA__*/null'

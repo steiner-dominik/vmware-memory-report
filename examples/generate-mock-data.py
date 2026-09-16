@@ -11,7 +11,7 @@ Environment modelled:
   vcenter01.example.com
     Metro-Stretched  8 hosts, 2 sites, 1024 GB  low active, consumed ~58% -> fits N+1, not a site failure
     Compute          4 hosts,  768 GB          busy, nightly batch peaks above the 50% active guidance
-    VDI              4 hosts,  512 GB + 512 GB NVMe tier (memory tiering already enabled)
+    VDI              4 hosts,  512 GB + 512 GB NVMe tier (tiering on, consumed above DRAM)
   vcenter02.example.com
     Branch           2 hosts,  384 GB
     (standalone)     1 witness host, 64 GB
@@ -31,7 +31,8 @@ CLUSTERS = [
     # vcenter, cluster, hosts, DRAM GB, NVMe GB, active load, consumed load, host prefix
     ("vcenter01.example.com", "Metro-Stretched", 8, 1024, 0, 0.16, 0.58, "esx-metro"),
     ("vcenter01.example.com", "Compute", 4, 768, 0, 0.34, 0.62, "esx-comp"),
-    ("vcenter01.example.com", "VDI", 4, 512, 512, 0.22, 0.85, "esx-vdi"),
+    # Tiering already on: consumed is above DRAM, so part of it is served by the NVMe tier.
+    ("vcenter01.example.com", "VDI", 4, 512, 512, 0.22, 1.45, "esx-vdi"),
     ("vcenter02.example.com", "Branch", 2, 384, 0, 0.12, 0.40, "esx-branch"),
     ("vcenter02.example.com", "(standalone)", 1, 64, 0, 0.05, 0.20, "esx-witness"),
 ]
@@ -63,7 +64,8 @@ def main():
                           "active": active * rnd.uniform(0.85, 1.25), "consumed": consumed * rnd.uniform(0.95, 1.05)})
     for h in hosts:
         prefixes = VM_PREFIXES[h["cluster"]]
-        budget = h["dram"] * h["consumed"] * 1.1  # assigned memory is usually above consumed
+        # assigned memory is usually above consumed; a tier lets consumed exceed DRAM
+        budget = min(h["dram"] + h["nvme"], h["dram"] * h["consumed"]) * 1.1
         while budget > 0:
             size = rnd.choice([4096, 8192, 8192, 16384, 16384, 32768, 65536])
             if h["cluster"] == "VDI":
@@ -116,13 +118,15 @@ def main():
             if h["cluster"] == "Compute" and 1 <= local_hour <= 4:
                 a *= 1.45  # nightly batch window
             a = min(a, h["dram"] * 0.95)
+            # Consumed can exceed DRAM only where a tier backs it, never the total memory.
+            consumed_mb = int(min(h["dram"] + h["nvme"], h["dram"] * h["consumed"] * drift))
             host_rows.append({
                 "Timestamp": mt.iso(ts), "WindowStart": mt.iso(ts - dt.timedelta(hours=1)), "VCenter": h["vc"], "Cluster": h["cluster"],
                 "VMHost": h["name"], "HostId": h["id"], "ConnectionState": "connected", "MaintenanceMode": "false",
                 "TieringType": h["tier"], "PhysicalMB": h["dram"] + h["nvme"], "DramMB": h["dram"], "NvmeTierMB": h["nvme"],
                 "VMsOn": per_host[h["id"]][0], "AssignedMB": per_host[h["id"]][1], "Samples": 180,
                 "ActiveAvgMB": int(a), "ActiveP95MB": int(min(h["dram"], a * 1.1)), "ActiveMaxMB": int(min(h["dram"], a * 1.25)),
-                "ConsumedAvgMB": int(h["dram"] * h["consumed"] * drift), "ConsumedMaxMB": int(h["dram"] * h["consumed"] * drift * 1.03),
+                "ConsumedAvgMB": consumed_mb, "ConsumedMaxMB": int(min(h["dram"] + h["nvme"], consumed_mb * 1.03)),
                 "BalloonMaxMB": 0, "SwapUsedMaxMB": 0})
         runs = []
         for vc in sorted(set(h["vc"] for h in hosts)):

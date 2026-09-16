@@ -9,8 +9,9 @@
       2. saves the vCenter credential with Export-Clixml (DPAPI - only this
          Windows account on this machine can decrypt it)
       3. tests the connection to every vCenter
-      4. registers the scheduled task "MemTier Collector" (every hour at :05);
-         every run collects and then rebuilds <BaseDir>\reports\MemTier_Report.html
+      4. registers the scheduled task "MemTier Collector" (every IntervalMinutes,
+         starting at :05); every run collects and then rebuilds
+         <BaseDir>\reports\MemTier_Report.html
 
     The task runs "whether the user is logged on or not", which needs the
     Windows password of the account once (it is stored by Task Scheduler, not
@@ -21,6 +22,10 @@
     Passed to the report: all clusters are stretched (site failover = 50% capacity).
 .PARAMETER StretchedClusterName
     Passed to the report: names of the stretched clusters.
+.PARAMETER IntervalMinutes
+    How often the collector runs: 60 (default), 30 or 15. Every run reads all 20-second samples of
+    its window, so a shorter interval does not find peaks an hourly run misses - it gives a finer
+    time resolution and loses less data when a single run fails.
 .PARAMETER InvalidCertificateAction
     Fail (default, recommended with trusted vCenter certificates) or Ignore.
 .EXAMPLE
@@ -31,7 +36,11 @@ param (
     [Parameter(Mandatory = $true)][string[]]$VCenterServer,
     [Parameter(Mandatory = $true)][string]$BaseDir,
     [ValidateSet('Fail', 'Warn', 'Ignore')][string]$InvalidCertificateAction = 'Fail',
-    [int]$Days = 30,
+    [ValidateSet(15, 30, 60)][int]$IntervalMinutes = 60,
+    [ValidateRange(1, 800)][int]$Days = 30,
+    [ValidateRange(1, 100)][double]$CandidatePct = 40,
+    [ValidateRange(1, 100)][double]$ThresholdPct = 50,
+    [ValidateSet('en', 'de')][string]$Language = 'en',
     [switch]$CompressOldMonths,
     [switch]$StretchedCluster,
     [Alias('StretchedClusters')]
@@ -86,7 +95,10 @@ $servers = $VCenterServer -join ','
 
 $collectArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$here\Invoke-MemTierCollector.ps1`" " +
     "-VCenterServer $servers -CredentialFile `"$credFile`" -DataDir `"$BaseDir\data`" -LogDir `"$BaseDir\logs`"" +
-    " -ReportDir `"$BaseDir\reports`" -Days $Days" +
+    " -ReportDir `"$BaseDir\reports`" -Days $Days -IntervalMinutes $IntervalMinutes" +
+    " -CandidatePct $($CandidatePct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
+    " -ThresholdPct $($ThresholdPct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
+    " -Language $Language" +
     $(if ($CompressOldMonths) { ' -CompressOldMonths' } else { '' }) +
     $(if ($StretchedCluster) { ' -StretchedCluster' } else { '' }) +
     $(if ($StretchedClusterName.Count) { " -StretchedClusterName `"$($StretchedClusterName -join ',')`"" } else { '' })
@@ -94,13 +106,13 @@ $collectArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$here
 $winCred = Get-Credential -UserName $user -Message "Windows password of $user (stored by Task Scheduler to run the task unattended)"
 $password = $winCred.GetNetworkCredential().Password
 
-# Parallel + 2 h: a long report must not make Task Scheduler skip the next hourly collection.
+# Parallel + 2 h: a long report must not make Task Scheduler skip the next collection.
 # Overlapping collections are still prevented by the collector's own lock.
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances Parallel -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 $start = (Get-Date).Date.AddHours((Get-Date).Hour + 1).AddMinutes(5)
-$collectTrigger = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-TimeSpan -Hours 1)
+$collectTrigger = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
 $collectAction = New-ScheduledTaskAction -Execute $exe -Argument $collectArgs -WorkingDirectory $here
-Register-ScheduledTask -TaskName 'MemTier Collector' -Description 'Hourly VMware memory tiering statistics and report (real-time active/consumed memory)' `
+Register-ScheduledTask -TaskName 'MemTier Collector' -Description "VMware memory tiering statistics and report every $IntervalMinutes minutes (real-time active/consumed memory)" `
     -Action $collectAction -Trigger $collectTrigger -Settings $settings -User $user -Password $password -RunLevel Limited -Force | Out-Null
 $password = $null
 
@@ -110,6 +122,6 @@ if (Get-ScheduledTask -TaskName 'MemTier Report' -ErrorAction SilentlyContinue) 
     Write-Host "[+] Removed the old 'MemTier Report' task" -ForegroundColor Green
 }
 
-Write-Host "[+] Registered 'MemTier Collector' (hourly from $($start.ToString('HH:mm')), rebuilds $BaseDir\reports\MemTier_Report.html)" -ForegroundColor Green
+Write-Host "[+] Registered 'MemTier Collector' (every $IntervalMinutes min from $($start.ToString('HH:mm')), rebuilds $BaseDir\reports\MemTier_Report.html)" -ForegroundColor Green
 Write-Host "    Collector: $exe $collectArgs"
 Write-Host "    Test now:  Start-ScheduledTask -TaskName 'MemTier Collector'; then check $BaseDir\logs" -ForegroundColor Cyan

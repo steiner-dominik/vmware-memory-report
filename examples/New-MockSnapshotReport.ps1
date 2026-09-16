@@ -31,7 +31,8 @@ $model = @(
     # vCenter, cluster, hosts, DRAM GB, NVMe GB, active load, consumed load, host prefix
     @('vcenter01.example.com', 'Metro-Stretched', 8, 1024, 0, 0.16, 0.58, 'esx-metro'),
     @('vcenter01.example.com', 'Compute', 4, 768, 0, 0.34, 0.62, 'esx-comp'),
-    @('vcenter01.example.com', 'VDI', 4, 512, 512, 0.22, 0.85, 'esx-vdi'),
+    # Tiering already on: consumed is above DRAM, so part of it is served by the NVMe tier.
+    @('vcenter01.example.com', 'VDI', 4, 512, 512, 0.22, 1.45, 'esx-vdi'),
     @('vcenter02.example.com', 'Branch', 2, 384, 0, 0.12, 0.40, 'esx-branch')
 )
 $global:MockInventory = @{}
@@ -55,7 +56,8 @@ foreach ($m in $model) {
             Runtime = [pscustomobject]@{ ConnectionState = 'connected'; InMaintenanceMode = $false }
         }
         $global:MockLoad["host-$n"] = @{ Kb = [long]$m[3] * 1048576; Active = $m[5] * (0.85 + 0.4 * $rnd.NextDouble()); Consumed = $m[6] }
-        $budget = [long]$m[3] * 1024 * $m[6] * 1.1
+        # Assigned memory is usually above consumed; a tier lets consumed exceed DRAM.
+        $budget = [math]::Min([long]($m[3] + $m[4]) * 1024, [long]$m[3] * 1024 * $m[6]) * 1.1
         while ($budget -gt 0) {
             $vmNo++
             $size = if ($m[1] -eq 'VDI') { @(4096, 8192)[$rnd.Next(2)] } else { @(4096, 8192, 8192, 16384, 16384, 32768, 65536)[$rnd.Next(7)] }

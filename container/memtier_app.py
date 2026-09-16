@@ -58,9 +58,9 @@ OPTIONS_FILE = "/data/options.json"
 INGRESS_PEERS = ("172.30.32.2", "127.0.0.1", "::1")
 SUPPORT_DEFAULT = "https://github.com/steiner-dominik/vmware-memory-report/issues"
 
-# Hosts keep one hour of 20-second samples, so the collector runs hourly and each run covers the
-# time since the previous one. A manual run is allowed once the window reaches this many minutes.
-INTERVAL_SECONDS = 3600
+# Hosts keep about one hour of 20-second samples, so a run may never cover more than that and each
+# run covers the time since the previous one. The schedule follows the interval_minutes option.
+# A manual run is allowed once the window has reached this many minutes.
 MIN_WINDOW_MINUTES = 5
 ENTITY_REFRESH_SECONDS = 600
 
@@ -74,12 +74,15 @@ DEFAULTS = collections.OrderedDict([
     ("ca_file", ""),
     ("api_release", ""),
     ("timeout_seconds", 120),
+    ("interval_minutes", 60),
     ("exclude_vm_pattern", "^vCLS-"),
     ("batch_size", 50),
     ("retention_months", 13),
     ("compress_old_months", True),
     ("report_days", 30),
+    ("candidate_pct", 40.0),
     ("threshold_pct", 50.0),
+    ("tier_ratio", 1.0),
     ("cold_pct", 40.0),
     ("hot_pct", 75.0),
     ("stretched_cluster", False),
@@ -217,6 +220,10 @@ def load_settings(environ=None, options_file=OPTIONS_FILE):
         except OSError as exc:
             errors.append("password file: %s" % exc)
 
+    if values["interval_minutes"] not in mt.INTERVAL_CHOICES:
+        errors.append("interval_minutes: expected one of %s, got %r"
+                      % (", ".join(str(i) for i in mt.INTERVAL_CHOICES), values["interval_minutes"]))
+        values["interval_minutes"] = 60
     if values["language"] not in LANGUAGES:
         errors.append("language: expected one of %s, got %r" % (", ".join(LANGUAGES), values["language"]))
         values["language"] = "en"
@@ -233,7 +240,8 @@ def load_settings(environ=None, options_file=OPTIONS_FILE):
             errors.append("exclude_vm_pattern: invalid regular expression (%s)" % exc)
     if values["ca_file"] and not os.path.isfile(values["ca_file"]):
         errors.append("ca_file: %s does not exist" % values["ca_file"])
-    for name, low, high in (("report_days", 1, 400), ("threshold_pct", 1, 100), ("cold_pct", 0, 100),
+    for name, low, high in (("report_days", 1, 400), ("candidate_pct", 1, 100), ("threshold_pct", 1, 100),
+                            ("tier_ratio", 0.1, 8), ("cold_pct", 0, 100),
                             ("hot_pct", 0, 100), ("retention_months", 0, 1200), ("timeout_seconds", 5, 3600),
                             ("batch_size", 1, 1000)):
         if not low <= values[name] <= high:
@@ -250,10 +258,13 @@ def memtier_config(settings):
         "vcenter": {"servers": ",".join(s["servers"]), "username": s["username"], "password": s["password"],
                     "verify_tls": flag(s["verify_tls"]), "ca_file": s["ca_file"], "api_release": s["api_release"],
                     "timeout_seconds": str(s["timeout_seconds"])},
-        "collector": {"data_dir": "data", "log_dir": "", "window_minutes": "60",
+        "collector": {"data_dir": "data", "log_dir": "", "interval_minutes": str(s["interval_minutes"]),
+                      "window_minutes": "",
                       "exclude_vm_pattern": s["exclude_vm_pattern"], "batch_size": str(s["batch_size"]),
                       "retention_months": str(s["retention_months"]), "compress_old_months": flag(s["compress_old_months"])},
-        "report": {"report_dir": "reports", "days": str(s["report_days"]), "threshold_pct": str(s["threshold_pct"]),
+        "report": {"report_dir": "reports", "days": str(s["report_days"]), "language": s["language"],
+                   "candidate_pct": str(s["candidate_pct"]), "threshold_pct": str(s["threshold_pct"]),
+                   "tier_ratio": str(s["tier_ratio"]),
                    "stretched_cluster": flag(s["stretched_cluster"]), "cold_pct": str(s["cold_pct"]),
                    "hot_pct": str(s["hot_pct"]), "title": s["title"], "support_contact": s["support_contact"]},
     })
@@ -264,10 +275,14 @@ def memtier_config(settings):
     return cfg
 
 
-def window_minutes(last_started, now):
-    """Minutes since the previous run, so consecutive windows neither overlap nor leave a gap."""
+def window_minutes(last_started, now, interval=60):
+    """Minutes since the previous run, so consecutive windows neither overlap nor leave a gap.
+
+    Capped at 60: that is all the real-time data a host keeps, so a longer gap cannot be
+    recovered and asking for it would only make the query fail.
+    """
     if last_started is None:
-        return 60
+        return min(60, interval)
     elapsed = int(round((now - last_started) / 60.0))
     return max(MIN_WINDOW_MINUTES, min(60, elapsed))
 
@@ -276,7 +291,7 @@ def window_minutes(last_started, now):
 # collected data
 # ----------------------------------------------------------------------------
 
-def latest_collection(data_dir, threshold_pct):
+def latest_collection(data_dir, threshold_pct):  # noqa: C901
     """Summary of the most recent collection: one run row per vCenter plus the busiest host."""
     runs = mt.data_files(data_dir, "run")
     if not runs:
@@ -291,6 +306,7 @@ def latest_collection(data_dir, threshold_pct):
     status = "failed" if "failed" in statuses else ("partial" if "partial" in statuses else "ok")
 
     peak = None
+    active_sum = cons_sum = cold_sum = 0
     hosts = mt.data_files(data_dir, "host")
     if month in hosts:
         for r in mt.read_csv(hosts[month]):
@@ -298,6 +314,14 @@ def latest_collection(data_dir, threshold_pct):
                 continue
             dram = mt.as_int(r.get("DramMB")) or mt.as_int(r.get("PhysicalMB"))
             active = mt.as_int(r.get("ActiveP95MB"))
+            avg = mt.as_int(r.get("ActiveAvgMB"))
+            cons = mt.as_int(r.get("ConsumedAvgMB"))
+            if dram and avg is not None and cons:
+                active_sum += avg
+                cons_sum += cons
+                # Cold memory still held in DRAM: on a tiered host the part above DRAM is
+                # already on NVMe and must not be counted as a saving again.
+                cold_sum += max(0, min(cons, dram) - avg)
             if not dram or active is None:
                 continue
             pct = round(active * 100.0 / dram, 1)
@@ -316,6 +340,8 @@ def latest_collection(data_dir, threshold_pct):
         "vmsTotal": total("VMsTotal"),
         "durationSec": total("DurationSec"),
         "peak": peak,
+        "activeOverConsumedPct": round(active_sum * 100.0 / cons_sum, 1) if cons_sum else None,
+        "coldInDramMB": cold_sum if cons_sum else None,
         "thresholdPct": threshold_pct,
         "vcenters": [{"vcenter": r.get("VCenter"), "status": r.get("Status"), "hosts": mt.as_int(r.get("Hosts")),
                       "hostsConnected": mt.as_int(r.get("HostsConnected")), "vmsOn": mt.as_int(r.get("VMsOn")),
@@ -389,6 +415,16 @@ class EntityPublisher(object):
                 "host": peak.get("host"), "cluster": peak.get("cluster"), "vcenter": peak.get("vcenter"),
                 "threshold_pct": (latest or {}).get("thresholdPct"),
                 "description": "P95 active memory of the busiest host in the last collection, as % of its DRAM"}),
+            # The metric the tiering decision is actually made on.
+            ("sensor.%s_active_of_consumed" % p, (latest or {}).get("activeOverConsumedPct") or "unknown", {
+                "friendly_name": "Memory tiering active of consumed memory", "unit_of_measurement": "%",
+                "state_class": "measurement", "icon": "mdi:fire",
+                "description": "Active over consumed memory across all hosts - at or below the candidate "
+                               "threshold most of the memory the hosts back is cold and an NVMe tier can absorb it"}),
+            ("sensor.%s_cold_in_dram" % p, (latest or {}).get("coldInDramMB") or "unknown", {
+                "friendly_name": "Memory tiering cold memory in DRAM", "unit_of_measurement": "MB",
+                "device_class": "data_size", "state_class": "measurement", "icon": "mdi:snowflake",
+                "description": "Consumed minus active memory that is still held in DRAM - what an NVMe tier would move"}),
         ]
 
     def publish(self, status, latest):
@@ -488,7 +524,7 @@ class App(object):
             return None
         if self.last_started is None:
             return self.started_at
-        return self.last_started + INTERVAL_SECONDS
+        return self.last_started + self.settings.interval_minutes * 60
 
     def manual_allowed_at(self):
         if self.last_started is None:
@@ -507,7 +543,7 @@ class App(object):
             if trigger == "manual" and now < self.manual_allowed_at():
                 return False, "too_soon"
             self.running = True
-            window = window_minutes(self.last_started, now)
+            window = window_minutes(self.last_started, now, self.settings.interval_minutes)
             # Recorded before the run: a crash mid-run must not make the next window overlap this one.
             self.last_started = now
             self.last_trigger = trigger
@@ -601,6 +637,7 @@ class App(object):
             "status": self.status_word,
             "source": self.settings.source,
             "language": self.settings.language,
+            "intervalMinutes": self.settings.interval_minutes,
             "configured": self.settings.configured,
             "errors": self.settings.errors,
             "missing": self.settings.missing(),

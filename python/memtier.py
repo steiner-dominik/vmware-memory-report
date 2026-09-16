@@ -45,7 +45,7 @@ import sys
 import time
 from urllib.parse import quote, unquote
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 LOG = logging.getLogger("memtier")
 
 HOST_FIELDS = [
@@ -66,6 +66,10 @@ RUN_FIELDS = [
 HOST_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.average", "mem.swapused.average"]
 VM_COUNTERS = ["mem.active.average", "mem.consumed.average", "mem.vmmemctl.average", "mem.swapped.average"]
 REALTIME_INTERVAL = 20
+# Supported collection intervals in minutes. 60 is plenty for a sizing decision; 15 and 30
+# give a finer time resolution and lose less data when a single run fails.
+INTERVAL_CHOICES = (15, 30, 60)
+LANGUAGES = ("en", "de")
 DATA_PLACEHOLDER = "/*__MEMTIER_DATA__*/null"
 # Rebuilt and overwritten after every collection; the CSV files keep the full history.
 REPORT_NAME = "MemTier_Report.html"
@@ -91,8 +95,13 @@ timeout_seconds = 120
 [collector]
 data_dir = {data_dir}
 log_dir = {log_dir}
-# Must match the schedule: run every <window_minutes> minutes (max. 60 - hosts keep 1 hour of real-time data)
-window_minutes = 60
+# Collection interval in minutes: 60, 30 or 15. The schedule must match this value.
+# Every run reads all 20-second samples of its window, so a shorter interval does not
+# find peaks that an hourly run misses - it gives a finer time resolution and loses
+# less data when a run fails (hosts keep only about one hour of real-time samples).
+interval_minutes = {interval_minutes}
+# Minutes of real-time data to read per run (max. 60). Empty = the interval above.
+window_minutes =
 # VMs whose name matches this regular expression are ignored (empty = none)
 exclude_vm_pattern = ^vCLS-
 # Entities per performance query; halved automatically if a query fails
@@ -105,8 +114,16 @@ compress_old_months = true
 [report]
 report_dir = {report_dir}
 days = 30
-# Tiering guidance: host active memory should stay at or below this % of DRAM
+# Report language: en or de (every reader can switch it in the report itself)
+language = en
+# THE decision metric: active memory as % of consumed memory. At or below this share the
+# memory that hosts actually back is mostly cold, which is exactly what an NVMe tier absorbs.
+candidate_pct = 40
+# Feasibility: the hot working set must still fit DRAM. Broadcom's guidance for the default
+# 1:1 DRAM:NVMe ratio is to keep host active memory at or below 50% of DRAM.
 threshold_pct = 50
+# NVMe tier size relative to DRAM used for sizing (1.0 = the supported 1:1 maximum)
+tier_ratio = 1.0
 # Stretched clusters (two sites): capacity after a failure is 50% of the cluster instead of N+1.
 # true = all clusters are stretched; or list the stretched clusters by name (comma separated)
 stretched_cluster = false
@@ -115,7 +132,7 @@ stretched_clusters =
 cold_pct = 40
 hot_pct = 75
 title = VMware Memory Tiering Report
-support_contact = dominik.steiner@nts.eu
+support_contact = https://github.com/steiner-dominik/vmware-memory-report/issues
 # Empty = look next to this script and in ../template
 template =
 """
@@ -272,21 +289,33 @@ class Config(object):
         self.log_dir = parser.get("collector", "log_dir", fallback="").strip()
         if self.log_dir and not os.path.isabs(self.log_dir):
             self.log_dir = os.path.normpath(os.path.join(base, self.log_dir))
-        self.window_minutes = max(5, min(60, parser.getint("collector", "window_minutes", fallback=60)))
+        self.interval_minutes = parser.getint("collector", "interval_minutes", fallback=60)
+        if self.interval_minutes not in INTERVAL_CHOICES:
+            LOG.warning("interval_minutes = %s is not one of %s - using 60",
+                        self.interval_minutes, ", ".join(str(i) for i in INTERVAL_CHOICES))
+            self.interval_minutes = 60
+        window = parser.get("collector", "window_minutes", fallback="").strip()
+        self.window_minutes = max(5, min(60, int(window))) if window else self.interval_minutes
         self.exclude_vm_pattern = parser.get("collector", "exclude_vm_pattern", fallback="^vCLS-").strip()
         self.batch_size = max(1, parser.getint("collector", "batch_size", fallback=50))
         self.retention_months = parser.getint("collector", "retention_months", fallback=13)
         self.compress_old_months = to_bool(parser.get("collector", "compress_old_months", fallback="true"), True)
 
         self.report_dir = path_opt("report", "report_dir", "reports")
-        self.days = parser.getint("report", "days", fallback=30)
+        self.days = max(1, min(400, parser.getint("report", "days", fallback=30)))
+        self.language = parser.get("report", "language", fallback="en").strip().lower() or "en"
+        if self.language not in LANGUAGES:
+            LOG.warning("language = %s is not supported (%s) - using en", self.language, ", ".join(LANGUAGES))
+            self.language = "en"
+        self.candidate_pct = parser.getfloat("report", "candidate_pct", fallback=40.0)
         self.threshold_pct = parser.getfloat("report", "threshold_pct", fallback=50.0)
+        self.tier_ratio = parser.getfloat("report", "tier_ratio", fallback=1.0)
         self.stretched_cluster = to_bool(parser.get("report", "stretched_cluster", fallback="false"), False)
         self.stretched_clusters = [c.strip() for c in parser.get("report", "stretched_clusters", fallback="").split(",") if c.strip()]
         self.cold_pct = parser.getfloat("report", "cold_pct", fallback=40.0)
         self.hot_pct = parser.getfloat("report", "hot_pct", fallback=75.0)
         self.title = parser.get("report", "title", fallback="VMware Memory Tiering Report").strip()
-        self.support_contact = parser.get("report", "support_contact", fallback="dominik.steiner@nts.eu").strip()
+        self.support_contact = parser.get("report", "support_contact", fallback="https://github.com/steiner-dominik/vmware-memory-report/issues").strip()
         self.template = parser.get("report", "template", fallback="").strip() or None
 
 
@@ -871,7 +900,8 @@ def build_report_data(cfg, now, days, builder):
         acc = h["buckets"].get(b)
         if acc is None:
             acc = h["buckets"][b] = {"w": 0, "avg": 0.0, "cons": 0.0, "cons_w": 0, "cons_max": 0, "cons_max_n": 0,
-                                     "vms": 0, "assigned": 0, "p95": 0, "max": 0, "balloon": 0, "swap": 0, "dram": 0}
+                                     "vms": 0, "assigned": 0, "p95": 0, "max": 0, "balloon": 0, "swap": 0,
+                                     "dram": 0, "nvme": 0}
             h["order"].append(b)
         acc["w"] += samples
         acc["avg"] += avg * samples
@@ -890,6 +920,8 @@ def build_report_data(cfg, now, days, builder):
         acc["balloon"] = max(acc["balloon"], as_int(r.get("BalloonMaxMB")) or 0)
         acc["swap"] = max(acc["swap"], as_int(r.get("SwapUsedMaxMB")) or 0)
         acc["dram"] = as_int(r.get("DramMB")) or as_int(r.get("PhysicalMB")) or 0
+        # Per bucket, not per host: a host that gets a tier mid-range must not look tiered all along.
+        acc["nvme"] = as_int(r.get("NvmeTierMB")) or 0
 
     host_list = []
     for key in sorted(hosts, key=lambda k: (hosts[k]["vc"], hosts[k]["cluster"], hosts[k]["name"])):
@@ -900,7 +932,7 @@ def build_report_data(cfg, now, days, builder):
             series.append([b, a["vms"], a["assigned"], round_half_up(a["avg"] / a["w"]), a["p95"], a["max"],
                            round_half_up(a["cons"] / a["cons_w"]) if a["cons_w"] else None,
                            a["balloon"], a["swap"], a["dram"],
-                           a["cons_max"] if a["cons_max_n"] else None])
+                           a["cons_max"] if a["cons_max_n"] else None, a["nvme"]])
         host_list.append({"key": key, "vc": h["vc"], "name": h["name"], "cluster": h["cluster"], "tiering": h["tiering"],
                           "dramMB": h["dramMB"], "nvmeMB": h["nvmeMB"], "physMB": h["physMB"], "s": series})
 
@@ -926,9 +958,11 @@ def build_report_data(cfg, now, days, builder):
         samples = max(1, as_int(r.get("Samples")) or 1)
         d = v["days"].get(di)
         if d is None:
-            d = v["days"][di] = {"hours": 0, "num": 0.0, "den": 0.0, "p95": [], "max": 0.0, "balloon": 0, "swap": 0,
+            d = v["days"][di] = {"minutes": 0.0, "num": 0.0, "den": 0.0, "p95": [], "max": 0.0, "balloon": 0, "swap": 0,
                                  "cnum": 0.0, "cden": 0.0, "cmax": None}
-        d["hours"] += 1
+        # Minutes covered, derived from the 20-second samples: correct for any collection
+        # interval, where counting rows silently quadrupled the weight at 15-minute runs.
+        d["minutes"] += samples * REALTIME_INTERVAL / 60.0
         d["num"] += avg * samples
         d["den"] += assigned * samples
         d["p95"].append((as_int(r.get("ActiveP95MB")) or 0) * 100.0 / assigned)
@@ -949,7 +983,7 @@ def build_report_data(cfg, now, days, builder):
         v = vms[key]
         daily = [None] * ndays
         for di, d in v["days"].items():
-            daily[di] = [d["hours"], round1(d["num"] * 100.0 / d["den"]), round1(p95(d["p95"])), round1(d["max"]),
+            daily[di] = [round1(d["minutes"]), round1(d["num"] * 100.0 / d["den"]), round1(p95(d["p95"])), round1(d["max"]),
                          d["balloon"], d["swap"],
                          round1(d["cnum"] * 100.0 / d["cden"]) if d["cden"] else None,
                          round1(d["cmax"]) if d["cmax"] is not None else None]
@@ -966,10 +1000,12 @@ def build_report_data(cfg, now, days, builder):
 
     vcenters = sorted(set([h["vc"] for h in host_list] + [v["vc"] for v in vm_list] + [r[1] for r in runs]))
     return {
-        "schema": 2,
+        "schema": 3,
         "meta": {"title": cfg.title, "support": cfg.support_contact, "generatedUtc": iso(now), "fromUtc": iso(cutoff),
-                 "toUtc": iso(now), "days": days, "thresholdPct": json_num(cfg.threshold_pct), "coldPct": json_num(cfg.cold_pct),
-                 "hotPct": json_num(cfg.hot_pct), "bucketHours": bucket_hours, "vcenters": vcenters, "builder": builder,
+                 "toUtc": iso(now), "days": days, "lang": cfg.language, "candidatePct": json_num(cfg.candidate_pct),
+                 "thresholdPct": json_num(cfg.threshold_pct), "tierRatio": json_num(cfg.tier_ratio),
+                 "coldPct": json_num(cfg.cold_pct), "hotPct": json_num(cfg.hot_pct), "bucketHours": bucket_hours,
+                 "intervalMinutes": cfg.interval_minutes, "vcenters": vcenters, "builder": builder,
                  "failover": {"stretched": cfg.stretched_cluster, "stretchedClusters": cfg.stretched_clusters}},
         "runs": runs, "hosts": host_list, "vms": vm_list,
     }
@@ -999,7 +1035,8 @@ def cmd_report(cfg, args):
         cfg.stretched_cluster = True
     if args.stretched_clusters:
         cfg.stretched_clusters = [c.strip() for c in args.stretched_clusters.split(",") if c.strip()]
-    for name in ("threshold_pct", "cold_pct", "hot_pct", "title", "support_contact", "template"):
+    for name in ("threshold_pct", "candidate_pct", "tier_ratio", "cold_pct", "hot_pct", "language",
+                 "title", "support_contact", "template"):
         value = getattr(args, name, None)
         if value is not None:
             setattr(cfg, name, value)
@@ -1049,9 +1086,13 @@ def cmd_setup(args):
         username = prompt("Read-only SSO user", "svc-memtier@vsphere.local")
         password = getpass.getpass("Password (stored in the config file, empty = use MEMTIER_PASSWORD): ")
         verify = prompt("Verify TLS certificates (true/false)", "true")
+        interval = prompt("Collection interval in minutes (60, 30 or 15)", "60")
+        if as_int(interval) not in INTERVAL_CHOICES:
+            print("  not one of 60/30/15 - using 60")
+            interval = "60"
         ensure_dir(base)
         text = DEFAULT_CONFIG.format(servers=servers, username=username, password=password.replace("\n", ""),
-                                     verify_tls=verify, data_dir=os.path.join(base, "data"),
+                                     verify_tls=verify, interval_minutes=int(interval), data_dir=os.path.join(base, "data"),
                                      log_dir=os.path.join(base, "logs"), report_dir=os.path.join(base, "reports"))
         old_umask = os.umask(0o077)
         try:
@@ -1077,10 +1118,15 @@ def cmd_setup(args):
 
     python = sys.executable or "/usr/bin/python3"
     script = os.path.abspath(__file__)
+    # The schedule has to match [collector] interval_minutes, otherwise consecutive windows
+    # overlap (double counting) or leave gaps the hosts have already discarded.
+    minute = "5" if cfg.interval_minutes >= 60 else "5-59/%d" % cfg.interval_minutes
     cron = ("# VMware memory tiering collector - installed by memtier.py setup\n"
             "SHELL=/bin/bash\n"
-            '5 * * * * root "%(py)s" "%(script)s" collect --config "%(cfg)s" --quiet\n') % {"py": python, "script": script, "cfg": path}
-    print("\nCron entry (collect hourly at :05, the report is rebuilt after every run):\n\n" + cron)
+            '%(min)s * * * * root "%(py)s" "%(script)s" collect --config "%(cfg)s" --quiet\n') % {
+        "min": minute, "py": python, "script": script, "cfg": path}
+    print("\nCron entry (collect every %d min from :05, the report is rebuilt after every run):\n\n%s"
+          % (cfg.interval_minutes, cron))
     if args.install_cron:
         if not ok:
             print("Not installing the cron job because the connection test failed.")
@@ -1121,7 +1167,11 @@ def main(argv=None):
                      help="all clusters are stretched: capacity after a failure is one site (50%%) instead of N+1")
     rep.add_argument("--stretched-clusters", "--stretched-cluster-name", metavar="NAMES", dest="stretched_clusters",
                      help="comma-separated names of the stretched clusters")
-    rep.add_argument("--threshold-pct", type=float, help="tiering guidance, %% of DRAM (default from config)")
+    rep.add_argument("--threshold-pct", type=float, help="feasibility guidance: active memory, %% of DRAM (default from config)")
+    rep.add_argument("--candidate-pct", type=float,
+                     help="decision metric: a cluster counts as a tiering candidate at or below this %% of active over consumed memory")
+    rep.add_argument("--tier-ratio", type=float, help="NVMe tier size relative to DRAM used for sizing (default 1.0 = 1:1)")
+    rep.add_argument("--language", choices=sorted(LANGUAGES), help="report language (readers can switch it in the report)")
     rep.add_argument("--cold-pct", type=float, help="per-VM cold threshold, %% of configured memory (default from config)")
     rep.add_argument("--hot-pct", type=float, help="per-VM hot threshold, %% of configured memory (default from config)")
     rep.add_argument("--title", help="report title")
