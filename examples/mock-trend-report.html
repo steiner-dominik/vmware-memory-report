@@ -430,12 +430,20 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       caseNewTiered: "{0} host(s) already run an NVMe tier and are left out: their DRAM saving is already made.",
       caseNewLittle: "Too much of the memory the hosts back is hot: a smaller DRAM purchase would leave the hot set short.",
       caseNewAllTiered: "Every host with a workload already runs an NVMe tier, so there is no DRAM saving left to make.",
+      caseNewRounded: "{0} of DRAM today → {1} of DRAM plus a {2} NVMe tier. Sized on measured consumption alone the " +
+        "requirement is lower, but it rounds up to the same buildable DIMM population.",
+      caseNewNone: "No powered-on VM in the selected clusters, so there is nothing to size.",
+      caseNewNoSaving: "Sized so every VM could use all of its assigned memory, these hosts already have no more DRAM than " +
+        "they would need with a {0} NVMe tier.",
+      caseNewNoSavingMeas: "Only if consumption stays where it is today would {0} less DRAM do.",
+      caseNewNoData: "No consumed-memory data in the selected range, so the new-server saving cannot be sized.",
+      standaloneHost: "{0} (standalone)",
       evActAsg: "Active P95 ÷ assigned", evActAsgLim: "limit {0}: at or below it, DRAM = assigned ÷ {1} still holds the hot set",
       evActCons: "Active ÷ consumed", evActConsLim: "limit {0}: {1} of the memory the hosts back is cold",
       vRetroFit: "Tier instead of a host", vRetroCpu: "CPU-bound", vRetroNotFull: "Memory not the bottleneck",
       vRetroHot: "Hot set too large", vRetroNoCpu: "No CPU data",
       caseRetroFit: "These hosts are out of memory but not out of CPU. A {0} tier gives them {1} of usable extra memory, " +
-        "capped at what their CPU can run up to {2} sustained.",
+        "capped at what their CPU can run up to {2} sustained and at what keeps their hot set within {3} of DRAM.",
       caseRetroCpu: "Memory is full on {0} host(s), but their CPU is busy too. A tier would add {1} of capacity on paper " +
         "with no CPU left to run VMs in it: those need more hosts, not more memory.",
       caseRetroNotFull: "Memory is not the bottleneck: consumed memory stays below {0} of DRAM on every host. A tier would " +
@@ -462,7 +470,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
         "assigned at or below {1} means DRAM can shrink to assigned ÷ {2}. Retrofit: a host qualifies when consumed memory " +
         "reaches {3} of DRAM while sustained CPU stays at or below {4}.",
       dcBenefit: "Active ÷ consumed", dcHalf: "Active P95 ÷ assigned", dcMemCpu: "Memory used • CPU",
-      dcNew: "New servers", dcRetro: "Retrofit", dcMeta: "{0} hosts • {1} DRAM • {2} cold",
+      dcNew: "New servers", dcRetro: "Retrofit", dcMeta: "{0} hosts • {1} DRAM • {2} cold", dcMetaOne: "1 host • {1} DRAM • {2} cold",
       // bottleneck map
       secQuad: "Which runs out first: memory or CPU?",
       quadHint: "Every host by memory used (consumed P95 ÷ DRAM) and sustained CPU (P95 of the per-interval averages). " +
@@ -486,8 +494,8 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       ttSavingMeasured: "Sized on today's consumption instead: max(active P95 / {0}%, consumed peak / (1 + {1}))",
       cPaper: "Extra on paper", ttPaper: "DRAM x (1 + {0}) minus consumed peak, on hosts whose hot set fits today - before asking whether CPU could use it",
       cUsable: "Usable extra memory",
-      ttUsable: "Extra memory on the hosts that qualify for a retrofit, capped at what their CPU can run up to {0}% sustained. Zero where CPU is the bottleneck.",
-      kUsable: "Usable extra memory", kUsableSub: "on hosts a tier would spare a purchase, capped by CPU • {0} on paper",
+      ttUsable: "Extra memory on the hosts that qualify for a retrofit, capped at what their CPU can run up to {0}% sustained and at what keeps the hot set at or below {1}% of DRAM as the workload grows. Zero where CPU is the bottleneck.",
+      kUsable: "Usable extra memory", kUsableSub: "on hosts a tier would spare a purchase, capped by CPU and hot set • {0} on paper",
       grpHost: "Host", grpMemory: "Memory", grpBenefit: "Benefit", grpNew: "New servers", grpRetro: "Retrofit", grpFeas: "Hot set",
       thActAsgP95: "Active P95 ÷ assigned", ttActAsgP95: "Active P95 over max(assigned P95, consumed peak) - the new-server test",
       thCpuSust: "CPU sustained", ttCpuSust: "P95 of the per-interval CPU averages - decides the retrofit",
@@ -688,12 +696,20 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       caseNewTiered: "{0} Host(s) haben bereits ein NVMe-Tier und bleiben außen vor: Deren DRAM-Ersparnis ist schon gemacht.",
       caseNewLittle: "Zu viel des hinterlegten Speichers ist heiß: Mit weniger DRAM wäre der heiße Anteil zu knapp.",
       caseNewAllTiered: "Jeder Host mit Last hat bereits ein NVMe-Tier, es bleibt keine DRAM-Ersparnis mehr übrig.",
+      caseNewRounded: "{0} DRAM heute → {1} DRAM plus ein NVMe-Tier von {2}. Nur auf den gemessenen Verbrauch dimensioniert " +
+        "ist der Bedarf kleiner, rundet aber auf dieselbe baubare DIMM-Bestückung auf.",
+      caseNewNone: "Keine eingeschaltete VM in den gewählten Clustern, es gibt nichts zu dimensionieren.",
+      caseNewNoSaving: "So dimensioniert, dass jede VM ihren gesamten zugewiesenen Speicher nutzen könnte, haben diese Hosts " +
+        "schon nicht mehr DRAM, als sie mit einem NVMe-Tier von {0} bräuchten.",
+      caseNewNoSavingMeas: "Nur wenn der Verbrauch bleibt, wo er heute ist, reichten {0} weniger DRAM.",
+      caseNewNoData: "Keine Daten zum belegten Speicher im gewählten Zeitraum, die Ersparnis für neue Server lässt sich nicht dimensionieren.",
+      standaloneHost: "{0} (Einzelhost)",
       evActAsg: "Aktiv P95 ÷ zugewiesen", evActAsgLim: "Grenze {0}: darunter trägt DRAM = zugewiesen ÷ {1} den heißen Anteil noch",
       evActCons: "Aktiv ÷ belegt", evActConsLim: "Grenze {0}: {1} des hinterlegten Speichers sind kalt",
       vRetroFit: "Tier statt Host", vRetroCpu: "CPU-gebunden", vRetroNotFull: "Speicher kein Engpass",
       vRetroHot: "Heißer Anteil zu groß", vRetroNoCpu: "Keine CPU-Daten",
       caseRetroFit: "Diesen Hosts geht der Speicher aus, die CPU aber nicht. Ein NVMe-Tier von {0} gibt ihnen {1} nutzbaren " +
-        "Zusatzspeicher, begrenzt auf das, was ihre CPU bis {2} Dauerlast tragen kann.",
+        "Zusatzspeicher, begrenzt auf das, was ihre CPU bis {2} Dauerlast tragen kann und was ihren heißen Anteil innerhalb von {3} des DRAM hält.",
       caseRetroCpu: "Auf {0} Host(s) ist der Speicher voll, die CPU aber auch. Ein Tier brächte {1} Kapazität auf dem Papier, " +
         "ohne CPU, um darin VMs zu betreiben: Dort helfen mehr Hosts, nicht mehr Speicher.",
       caseRetroNotFull: "Speicher ist nicht der Engpass: Der belegte Speicher bleibt auf jedem Host unter {0} des DRAM. Ein Tier " +
@@ -718,7 +734,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
         "zugewiesen höchstens {1} heißt, das DRAM kann auf zugewiesen ÷ {2} schrumpfen. Nachrüsten: Ein Host kommt in Frage, " +
         "wenn der belegte Speicher {3} des DRAM erreicht, während die CPU-Dauerlast höchstens {4} beträgt.",
       dcBenefit: "Aktiv ÷ belegt", dcHalf: "Aktiv P95 ÷ zugewiesen", dcMemCpu: "Speicher belegt • CPU",
-      dcNew: "Neue Server", dcRetro: "Nachrüsten", dcMeta: "{0} Hosts • {1} DRAM • {2} kalt",
+      dcNew: "Neue Server", dcRetro: "Nachrüsten", dcMeta: "{0} Hosts • {1} DRAM • {2} kalt", dcMetaOne: "1 Host • {1} DRAM • {2} kalt",
       secQuad: "Was geht zuerst aus: Speicher oder CPU?",
       quadHint: "Jeder Host nach belegtem Speicher (belegt P95 ÷ DRAM) und CPU-Dauerlast (P95 der Intervall-Durchschnitte). " +
         "Rechts unten: Speicher voll, CPU frei - ein Tier bringt Kapazität statt eines Hosts. Rechts oben: beides voll - ein " +
@@ -740,8 +756,8 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       ttSavingMeasured: "Stattdessen auf den heutigen Verbrauch dimensioniert: max(aktiv P95 / {0} %, belegt Spitze / (1 + {1}))",
       cPaper: "Zusätzlich auf dem Papier", ttPaper: "DRAM x (1 + {0}) minus belegte Spitze, auf Hosts, deren heißer Anteil heute passt - bevor gefragt wird, ob die CPU es nutzen könnte",
       cUsable: "Nutzbarer Zusatzspeicher",
-      ttUsable: "Zusatzspeicher auf den Hosts, die fürs Nachrüsten in Frage kommen, begrenzt auf das, was ihre CPU bis {0} % Dauerlast tragen kann. Null, wo die CPU der Engpass ist.",
-      kUsable: "Nutzbarer Zusatzspeicher", kUsableSub: "auf Hosts, denen ein Tier einen Kauf erspart, begrenzt durch die CPU • {0} auf dem Papier",
+      ttUsable: "Zusatzspeicher auf den Hosts, die fürs Nachrüsten in Frage kommen, begrenzt auf das, was ihre CPU bis {0} % Dauerlast tragen kann und was den heißen Anteil bei wachsender Last bei höchstens {1} % des DRAM hält. Null, wo die CPU der Engpass ist.",
+      kUsable: "Nutzbarer Zusatzspeicher", kUsableSub: "auf Hosts, denen ein Tier einen Kauf erspart, begrenzt durch CPU und heißen Anteil • {0} auf dem Papier",
       grpHost: "Host", grpMemory: "Speicher", grpBenefit: "Nutzen", grpNew: "Neue Server", grpRetro: "Nachrüsten", grpFeas: "Heißer Anteil",
       thActAsgP95: "Aktiv P95 ÷ zugewiesen", ttActAsgP95: "Aktiv P95 zu max(zugewiesen P95, belegt Spitze) - der Test für neue Server",
       thCpuSust: "CPU Dauerlast", ttCpuSust: "P95 der CPU-Durchschnitte je Intervall - entscheidet das Nachrüsten",
@@ -924,7 +940,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       rOk: "ok", rPartial: "teilweise", rFailed: "fehlgeschlagen"
     }
   };
-  var ASCII = "ONE HOST, ONE COLLECTION INTERVAL\n\n  configured  |################################################################|  512 GB\n              memory assigned to the powered-on VMs - includes memory never touched\n\n  consumed    |##########################################|                        336 GB\n              machine memory the host really backs the VMs with\n\n  active      |############|                                                      101 GB\n              guest pages recently touched - the hot working set\n\n              |<- active ->|<----------- cold (consumed - active) ---->|\n                    30 %                          70 %\n\n              active / consumed = 101 / 336 = 30 %  ->  candidate (at or below 40 %)\n\n\nBUYING NEW HARDWARE                      the same workload, sized with a 1:1 tier\n\n  DRAM 384 GB                            DRAM 256 GB   +   NVMe 256 GB\n  +-----------------------------+        +--------------+--------------+\n  |active|        cold          |        |active| cold  |     cold     |\n  +-----------------------------+        +--------------+--------------+\n  336 GB of memory, all in DRAM          hot set 101 GB <= 50 % of 256 GB DRAM: fits\n\n    conservative (headline): every VM may grow into all of its assigned memory\n    DRAM needed = max( active P95 / 50 % , max(assigned P95, consumed peak) / (1 + 1) )\n                = max( 101 / 0.5 , max(512, 336) / 2 ) = max( 202 , 256 ) = 256 GB\n    DRAM saved  = 384 - 256 = 128 GB\n\n    measured (best case): consumed stays where it is today\n    DRAM needed = max( 202 , 336 / 2 ) = 202 GB   ->   DRAM saved = 182 GB\n\n    active P95 / assigned = 101 / 512 = 20 %  <=  50 % / (1 + 1) = 25 %\n    -> the tier alone sets the DRAM: assigned / 2 still holds the hot set (full saving)\n\n    Hosts that already run a tier are left out: their DRAM saving is already made.\n\n\nEXTENDING HOSTS YOU ALREADY OWN          no new DRAM, add NVMe instead\n\n    only where memory is the bottleneck and the CPU is not:\n      consumed P95 >= 70 % of DRAM  and  sustained CPU (P95 of interval averages) <= 50 %\n\n    capacity with a 1:1 tier = DRAM x (1 + 1) = 384 x 2 = 768 GB\n    extra on paper           = 768 - 336 (consumed peak) = 432 GB\n    usable extra memory      = min( extra on paper , consumed x (80 % / CPU - 1) )\n                               at 40 % CPU: min( 432 , 336 x (80 / 40 - 1) ) = 336 GB\n    valid while active P95 stays at or below 50 % of the 384 GB DRAM\n\n\nHOSTS THAT ALREADY HAVE A TIER           cold memory must not be counted twice\n\n  DRAM 192 GB  +  NVMe 192 GB            consumed 336 GB, active 101 GB\n  +--------------+--------------+\n  |active| cold  |     cold     |          on NVMe     = consumed - DRAM        = 144 GB\n  +--------------+--------------+          cold in DRAM = min(consumed, DRAM)\n     101     91         144                             - active = 192 - 101    =  91 GB\n\n    Only those 91 GB are still in DRAM and still movable. Reporting the full\n    235 GB of cold memory would promise the same saving a second time.";
+  var ASCII = "ONE HOST, ONE COLLECTION INTERVAL\n\n  configured  |################################################################|  512 GB\n              memory assigned to the powered-on VMs - includes memory never touched\n\n  consumed    |##########################################|                        336 GB\n              machine memory the host really backs the VMs with\n\n  active      |############|                                                      101 GB\n              guest pages recently touched - the hot working set\n\n              |<- active ->|<----------- cold (consumed - active) ---->|\n                    30 %                          70 %\n\n              active / consumed = 101 / 336 = 30 %  ->  candidate (at or below 40 %)\n\n\nBUYING NEW HARDWARE                      the same workload, sized with a 1:1 tier\n\n  DRAM 384 GB                            DRAM 256 GB   +   NVMe 256 GB\n  +-----------------------------+        +--------------+--------------+\n  |active|        cold          |        |active| cold  |     cold     |\n  +-----------------------------+        +--------------+--------------+\n  336 GB of memory, all in DRAM          hot set 101 GB <= 50 % of 256 GB DRAM: fits\n\n    conservative (headline): every VM may grow into all of its assigned memory\n    DRAM needed = max( active P95 / 50 % , max(assigned P95, consumed peak) / (1 + 1) )\n                = max( 101 / 0.5 , max(512, 336) / 2 ) = max( 202 , 256 ) = 256 GB\n    DRAM saved  = 384 - 256 = 128 GB\n\n    measured (best case): consumed stays where it is today\n    DRAM needed = max( 202 , 336 / 2 ) = 202 GB   ->   DRAM saved = 182 GB\n\n    DRAM is bought in DIMMs, so both are rounded up to a population you can order:\n    202 GB becomes 16 x 16 GB = 256 GB, and on this one host both savings are 128 GB.\n\n    active P95 / assigned = 101 / 512 = 20 %  <=  50 % / (1 + 1) = 25 %\n    -> the tier alone sets the DRAM: assigned / 2 still holds the hot set (full saving)\n\n    Hosts that already run a tier are left out: their DRAM saving is already made.\n\n\nEXTENDING HOSTS YOU ALREADY OWN          no new DRAM, add NVMe instead\n\n    only where memory is the bottleneck and the CPU is not:\n      consumed P95 >= 70 % of DRAM  and  sustained CPU (P95 of interval averages) <= 50 %\n\n    capacity with a 1:1 tier = DRAM x (1 + 1) = 384 x 2 = 768 GB\n    extra on paper           = 768 - 336 (consumed peak) = 432 GB\n    the extra memory is filled by more of the same workload, so CPU and hot set grow with it:\n    usable extra memory      = min( extra on paper,\n                                    consumed x (80 % / CPU - 1),                    CPU up to 80 %\n                                    (50 % x DRAM - active P95) x consumed / active ) hot set up to 50 %\n                             = min( 432 , 336 x (80 / 40 - 1) , (192 - 101) x 336 / 101 )\n                             = min( 432 , 336 , 303 ) = 303 GB\n\n\nHOSTS THAT ALREADY HAVE A TIER           cold memory must not be counted twice\n\n  DRAM 192 GB  +  NVMe 192 GB            consumed 336 GB, active 101 GB\n  +--------------+--------------+\n  |active| cold  |     cold     |          on NVMe     = consumed - DRAM        = 144 GB\n  +--------------+--------------+          cold in DRAM = min(consumed, DRAM)\n     101     91         144                             - active = 192 - 101    =  91 GB\n\n    Only those 91 GB are still in DRAM and still movable. Reporting the full\n    235 GB of cold memory would promise the same saving a second time.";
   var LANGS = [["en", "English"], ["de", "Deutsch"]];
   function store(key, value) {
     try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch (e) { return null; }
@@ -1120,6 +1136,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     return [t("vFitsCap"), "good"];
   }
 
+  var STANDALONE = "(standalone)";   // what the collectors write for a host outside any cluster
   function hostVisible(h) { return (!state.vc || h.vc === state.vc) && (!state.cluster || h.cluster === state.cluster); }
 
   // ---------- header and language ----------
@@ -1189,7 +1206,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     var col = metricCol(), vals = [], maxv = [], avgNum = 0, avgDen = 0, pts = [], balloon = 0, swap = 0, last = null;
     var consVals = [], consNum = 0, consDen = 0, actOnCons = 0, asgNum = 0, actOnAsg = 0;
     var coldNum = 0, coldN = 0, nvmeNum = 0, ratios = [], p95Vals = [], consPeaks = [];
-    var cpuVals = [], cpuP95Vals = [], cpuMaxOf = 0, measured = false, asgVals = [];
+    var cpuVals = [], cpuP95Vals = [], cpuMaxOf = 0, measured = false, asgVals = [], memVals = [], consMBs = [];
     for (var i = 0; i < h.s.length; i++) {
       var r = h.s[i]; if (r[S_TS] < t0) continue;
       var dram = r[S_DRAM] || h.dramMB; if (!dram) continue;
@@ -1203,6 +1220,10 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       if (r[S_CONS] != null) {
         consPct = r[S_CONS] / dram * 100;
         consVals.push(consPct);
+        consMBs.push(r[S_CONS]);
+        // How full the host is, against the memory it had in that interval: on a tiered host consumed
+        // legitimately exceeds DRAM, and a host that got its tier mid-range was not tiered before.
+        memVals.push(r[S_CONS] / (dram + nvme) * 100);
         consNum += r[S_CONS]; consDen += dram; actOnCons += r[S_AVG];
         ratios.push(r[S_AVG] / r[S_CONS] * 100);
         coldNum += coldInDram(r[S_CONS], r[S_AVG], dram, r[S_TIER_DRAM]); coldN++;
@@ -1239,19 +1260,23 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     // Retrofit. Sustained CPU (P95 of the interval averages) decides; the P95 of the interval peaks is
     // dominated by the busiest minutes and would call a host busy that idles most of the week.
     st.cpuSustained = p95(cpuVals);
-    // On a tiered host consumed legitimately exceeds DRAM; how full it is, is a question of DRAM + NVMe.
-    st.memUsed = st.consP95 == null ? null : st.tiered ? st.consP95 * (h.dramMB || 0) / ((h.dramMB || 0) + h.nvmeMB) : st.consP95;
+    // Memory used: consumed P95 against DRAM + NVMe tier, per interval (equals consumed / DRAM without a tier).
+    st.memUsed = p95(memVals);
     st.ramBound = st.memUsed != null && st.memUsed >= RAM_BOUND;
     st.cpuIdle = st.cpuSustained != null && st.cpuSustained <= CPU_IDLE;
     var dram = h.dramMB || 0;
     st.hotFits = st.activeSizeMB != null && dram > 0 && st.activeSizeMB <= dram * THR / 100;
-    // Capacity a tier adds on paper, and the part of it the CPU could actually run VMs in.
+    // Capacity a tier adds on paper, and the part of it the workload could actually use. Extra memory
+    // is filled by more of the same workload, so it brings CPU and hot set along in proportion:
+    //   CPU      consumed x (CPU_TARGET / CPU - 1)             - CPU reaches CPU_TARGET sustained
+    //   hot set  (THR% of DRAM - active P95) x consumed / active - the hot set reaches THR% of DRAM
     st.paperMB = !st.tiered && st.hotFits && st.consPeakMB != null ? Math.max(0, dram * (1 + ratio()) - st.consPeakMB) : 0;
     st.retro = retroStatus(st);
     st.tierInsteadOfHost = st.retro === "fit";
-    var consMB = st.memUsed == null ? 0 : st.memUsed * dram / 100;
+    var consMB = p95(consMBs) || 0;
     var cpuRoom = !st.cpuSustained ? Infinity : consMB * Math.max(0, CPU_TARGET / st.cpuSustained - 1);
-    st.usableMB = st.tierInsteadOfHost ? Math.min(st.paperMB, cpuRoom) : 0;
+    var hotRoom = !st.activeSizeMB ? Infinity : Math.max(0, dram * THR / 100 - st.activeSizeMB) * consMB / st.activeSizeMB;
+    st.usableMB = st.tierInsteadOfHost ? Math.min(st.paperMB, cpuRoom, hotRoom) : 0;
     return st;
   }
   // Out of memory but not out of CPU: that host gains capacity from a tier, not from a socket.
@@ -1266,6 +1291,8 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
   }
   var RETRO = { fit: ["vRetroFit", "good"], cpu: ["vRetroCpu", "warning"], notfull: ["vRetroNotFull", ""],
     hot: ["vRetroHot", "warning"], nocpu: ["vRetroNoCpu", ""], tiered: ["vTiered", ""], nodata: ["vNoData", ""] };
+  // Sort order of the retrofit verdicts: the hosts a tier would help first.
+  var RETRO_ORDER = ["fit", "hot", "cpu", "notfull", "nocpu", "tiered", "nodata"];
   function retroBadge(key) { var r = RETRO[key] || RETRO.nodata; return [t(r[0]), r[1]]; }
   function tieringLabel(v) {
     if (!v || v === "noTiering") return t("tierNone");
@@ -1326,7 +1353,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     var cons = need(Math.max(asgMB || 0, consPeakMB)), meas = need(consPeakMB);
     return { dram: dramMB, active: activeSizeMB, asg: asgMB, consPeak: consPeakMB, share: share, hosts: hosts,
       raw: cons.raw, build: cons.build, needed: cons.needed, saving: Math.max(0, dramMB - cons.needed),
-      neededMeas: meas.needed, savingMeas: Math.max(0, dramMB - meas.needed) };
+      rawMeas: meas.raw, neededMeas: meas.needed, savingMeas: Math.max(0, dramMB - meas.needed) };
   }
   function buildLabel(z) {
     return z && z.build ? num(z.build.n) + " \u00d7 " + num(z.build.gb) + " GB" : "\u2013";
@@ -1460,30 +1487,39 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     if (!c.uHosts.length) return { key: "tiered", label: t("vTiered"), cls: "" };
     if (!c.uSizing || c.activeOverCons == null) return { key: "nodata", label: t("vNoData"), cls: "" };
     if (c.activeOverCons > CAND) return { key: "little", label: t("vNewLittle"), cls: "serious" };
+    // Overcommitted hosts: sized for everything assigned, they need all the DRAM they have.
+    if (c.uSizing.saving <= 0) return { key: "nosaving", label: t("vNewLittle"), cls: "serious" };
     if (c.hotShare <= halfLimit()) return { key: "full", label: t("vNewFull"), cls: "good" };
     return { key: "partial", label: t("vNewPartial"), cls: "warning" };
   }
   function newServers(clist, actOverCons) {
-    var o = { saving: 0, savingMeas: 0, dram: 0, needed: 0, neededMeas: 0, active: 0, basis: 0, eligible: 0, sized: 0,
-      tieredHosts: 0, withWork: 0 };
+    var o = { saving: 0, savingMeas: 0, dram: 0, needed: 0, neededMeas: 0, raw: 0, rawMeas: 0, active: 0, basis: 0,
+      allActive: 0, allBasis: 0, eligible: 0, sized: 0, little: 0, noSaving: 0, noSavingMeas: 0, tieredHosts: 0, withWork: 0,
+      withUntiered: 0 };
     clist.forEach(function (c) {
       if (c.noWorkload) return;
       o.withWork++;
       o.tieredHosts += c.hosts.length - c.uHosts.length;
+      if (c.uHosts.length) o.withUntiered++;
       var z = c.uSizing;
       if (!z) return;
       o.sized++;
-      o.active += z.active; o.basis += Math.max(z.asg || 0, z.consPeak);
+      o.allActive += z.active; o.allBasis += Math.max(z.asg || 0, z.consPeak);
+      if (c.newVerdict.key === "little") o.little++;
+      if (c.newVerdict.key === "nosaving") { o.noSaving++; o.noSavingMeas += z.savingMeas; }
+      // The headline, the badge and the evidence all rest on the same clusters: those with a saving.
       if (c.newVerdict.key === "full" || c.newVerdict.key === "partial") {
         o.eligible++; o.saving += z.saving; o.savingMeas += z.savingMeas;
-        o.dram += z.dram; o.needed += z.needed; o.neededMeas += z.neededMeas;
+        o.dram += z.dram; o.needed += z.needed; o.neededMeas += z.neededMeas; o.raw += z.raw; o.rawMeas += z.rawMeas;
+        o.active += z.active; o.basis += Math.max(z.asg || 0, z.consPeak);
       }
     });
+    if (!o.eligible) { o.active = o.allActive; o.basis = o.allBasis; }
     o.hotShare = o.basis ? o.active / o.basis * 100 : null;
     if (!o.withWork) o.key = "none";
-    else if (!o.sized) o.key = "tiered";
-    else if (actOverCons == null || actOverCons > CAND || !o.eligible) o.key = "little";
-    else o.key = o.hotShare <= halfLimit() ? "full" : "partial";
+    else if (!o.withUntiered) o.key = "tiered";
+    else if (o.eligible) o.key = o.hotShare <= halfLimit() ? "full" : "partial";
+    else o.key = o.little ? "little" : o.noSaving ? "nosaving" : "nodata";
     return o;
   }
   function retrofit(list) {
@@ -1519,7 +1555,8 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     if (actOverCons == null && !rf.n) { box.hidden = true; return; }
     box.hidden = false;
     var NEW = { full: ["vNewFull", "good"], partial: ["vNewPartial", "warning"], little: ["vNewLittle", "serious"],
-      tiered: ["vTiered", ""], none: ["vNoWorkload", ""] };
+      tiered: ["vTiered", ""], none: ["vNoWorkload", ""], nodata: ["vNoData", ""],
+      nosaving: ["vNewLittle", "serious"] };
     var nv = NEW[nw.key];
     var c1 = el("div", { class: "case" + (nv[1] ? " " + nv[1] : "") });
     var h1 = el("div", { class: "ch" }); h1.appendChild(el("h3", null, t("caseNewTitle")));
@@ -1527,9 +1564,14 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     var v1 = el("div", { class: "cv" });
     v1.appendChild(document.createTextNode(nw.eligible ? "\u2212" + szu(nw.saving) + " " : "\u2013 "));
     v1.appendChild(el("small", null, t("caseLess"))); c1.appendChild(v1);
-    var body = nw.key === "tiered" ? t("caseNewAllTiered") : nw.key === "little" || !nw.eligible ? t("caseNewLittle") :
-      Math.abs(nw.neededMeas - nw.needed) < 1024 ? t("caseNewSame", szu(nw.dram), szu(nw.needed), tierLabel()) :
-      t("caseNewBody", szu(nw.dram), szu(nw.needed), tierLabel(), szu(nw.neededMeas), szu(nw.savingMeas));
+    // "Same figure" has two causes: the hot set sets the DRAM on both bases, or the measured basis is
+    // lower but rounds up to the same DIMM population. Only the first is the hot set's doing.
+    var body = { tiered: t("caseNewAllTiered"), none: t("caseNewNone"), nodata: t("caseNewNoData"), little: t("caseNewLittle"),
+      nosaving: t("caseNewNoSaving", tierLabel()) + (nw.noSavingMeas >= 1024 ? " " + t("caseNewNoSavingMeas", szu(nw.noSavingMeas)) : "") }[nw.key] ||
+      (Math.abs(nw.neededMeas - nw.needed) >= 1024 ?
+        t("caseNewBody", szu(nw.dram), szu(nw.needed), tierLabel(), szu(nw.neededMeas), szu(nw.savingMeas)) :
+        Math.abs(nw.rawMeas - nw.raw) < 1024 ? t("caseNewSame", szu(nw.dram), szu(nw.needed), tierLabel()) :
+        t("caseNewRounded", szu(nw.dram), szu(nw.needed), tierLabel()));
     c1.appendChild(el("p", { class: "cb" }, body));
     if (nw.tieredHosts && nw.key !== "tiered") c1.appendChild(el("p", { class: "cb" }, t("caseNewTiered", num(nw.tieredHosts))));
     var e1 = el("div", { class: "ev" });
@@ -1547,7 +1589,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     var v2 = el("div", { class: "cv" });
     v2.appendChild(document.createTextNode(num(rf.fit) + " "));
     v2.appendChild(el("small", null, t("caseOfHosts", num(rf.n - rf.tiered)))); c2.appendChild(v2);
-    var rb = { fit: t("caseRetroFit", tierLabel(), szu(rf.usable), lim(CPU_TARGET)),
+    var rb = { fit: t("caseRetroFit", tierLabel(), szu(rf.usable), lim(CPU_TARGET), lim(THR)),
       cpu: t("caseRetroCpu", num(rf.cpu), szu(rf.paperCpu)), notfull: t("caseRetroNotFull", lim(RAM_BOUND), szu(rf.paper)),
       hot: t("caseRetroHot", lim(THR)), nocpu: t("caseRetroNoCpu"), tiered: t("caseRetroAllTiered"), nodata: t("candEmpty") }[rf.key];
     c2.appendChild(el("p", { class: "cb" }, rb));
@@ -1731,10 +1773,14 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
 
     // clusters: summed per point in time. The u* sums cover only hosts without a tier, which are
     // the only ones a smaller DRAM purchase can still save on.
+    // A host outside any cluster is its own group of one: pooling them would invent a cluster that
+    // cannot fail over, and leaving them out would size nothing at all for a fleet of standalone hosts.
     var clusters = {};
     hs.forEach(function (x) {
-      var key = x.h.vc + "|" + x.h.cluster;
-      var c = clusters[key] || (clusters[key] = { name: x.h.cluster, vc: x.h.vc, hosts: [], hs: [], t: {} });
+      var alone = x.h.cluster === STANDALONE;
+      var key = x.h.vc + "|" + x.h.cluster + (alone ? "|" + x.h.key : "");
+      var c = clusters[key] || (clusters[key] = { name: alone ? t("standaloneHost", x.h.name) : x.h.cluster, cluster: x.h.cluster,
+        standalone: alone, vc: x.h.vc, hosts: [], hs: [], t: {} });
       c.hosts.push(x.h); c.hs.push(x);
       x.st.pts.forEach(function (p) {
         var a = c.t[p.t] || (c.t[p.t] = { active: 0, avgActive: 0, p95Active: 0, assigned: 0, max: 0, dram: 0, big: 0,
@@ -1755,9 +1801,9 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
         a.n++;
       });
     });
-    var clist = Object.keys(clusters).map(function (k) { return clusters[k]; }).filter(function (c) { return c.name !== "(standalone)"; });
+    var clist = Object.keys(clusters).map(function (k) { return clusters[k]; });
     clist.forEach(function (c) {
-      c.stretched = isStretched(c.name);
+      c.stretched = !c.standalone && isStretched(c.name);
       var stamps = Object.keys(c.t).map(Number).sort(function (a, b) { return a - b; });
       var pts = stamps.map(function (ts) {
         var a = c.t[ts];
@@ -1829,11 +1875,11 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       c.dramFit = dramVerdict(c.dram ? (c.activeSizeMB == null ? null : c.activeSizeMB / c.dram * 100) : null);
       // The tiering-specific failure question: after a host or a site is gone, the same hot set
       // has to fit the DRAM that is left. Consumed memory fitting is ordinary HA admission control.
-      c.naturalCap = failoverCapacity(naturallyStretched(c.name), c.dram, c.big, c.hosts.length);
+      c.naturalCap = failoverCapacity(!c.standalone && naturallyStretched(c.name), c.dram, c.big, c.hosts.length);
       c.hotAfterFail = c.naturalCap && c.activeSizeMB != null ? c.activeSizeMB / c.naturalCap * 100 : null;
       c.failFit = dramVerdict(c.hotAfterFail);
     });
-    var anyStretched = clist.some(function (c) { return naturallyStretched(c.name); });
+    var anyStretched = clist.some(function (c) { return !c.standalone && naturallyStretched(c.name); });
     var nw = newServers(clist, actOverCons);
     if (clist.length) {
       var candCount = clist.filter(function (c) { return !c.noWorkload && c.candidate[1] === "good"; }).length;
@@ -1999,7 +2045,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       { key: "saving", label: t("cDramSaving") + " " + U.name, num: true, fmt: sz, title: t("ttDramSaving") },
       { key: "savingMeas", label: t("cSavingMeasured") + " " + U.name, num: true, fmt: sz, title: t("ttSavingMeasured", thr(THR), thr(ratio())) },
       { key: "paper", label: t("cPaper") + " " + U.name, num: true, fmt: sz, title: t("ttPaper", thr(ratio())), adv: true },
-      { key: "usable", label: t("cUsable") + " " + U.name, num: true, fmt: sz, title: t("ttUsable", thr(CPU_TARGET)) }
+      { key: "usable", label: t("cUsable") + " " + U.name, num: true, fmt: sz, title: t("ttUsable", thr(CPU_TARGET), thr(THR)) }
     ].filter(function (c) { return advanced() || !c.adv; });
     renderTable($("sizingTable"), cols, sortRows(rows, state.sizingSort), state.sizingSort, render);
   }
@@ -2019,12 +2065,13 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       if (!worst) c.hs.forEach(function (x) { if (x.st.memUsed != null && (!worst || x.st.memUsed > worst.memUsed)) worst = x.st; });
       return { c: c, name: c.name, coldMB: c.noWorkload ? -1 : c.coldMB, actCons: c.activeOverCons, hotShare: c.hotShare,
         memUsed: worst ? worst.memUsed : null, cpu: worst ? worst.cpuSustained : null,
-        saving: c.uSizing && (c.newVerdict.key === "full" || c.newVerdict.key === "partial") ? c.uSizing.saving : null };
+        saving: c.uSizing && (c.newVerdict.key === "full" || c.newVerdict.key === "partial") ? c.uSizing.saving : null,
+        retro: RETRO_ORDER.indexOf(c.retro.key) };
     });
     renderTable($("decisionTable"), [
       { key: "name", label: t("cCluster"), render: function (td, r) {
         td.appendChild(el("b", null, r.name)); td.appendChild(document.createElement("br"));
-        td.appendChild(el("span", { class: "hint" }, t("dcMeta", num(r.c.hosts.length), szu(r.c.dram), szu(r.c.coldMB))));
+        td.appendChild(el("span", { class: "hint" }, t(r.c.hosts.length === 1 ? "dcMetaOne" : "dcMeta", num(r.c.hosts.length), szu(r.c.dram), szu(r.c.coldMB))));
       } },
       { key: "actCons", label: t("dcBenefit"), num: true, render: function (td, r) { meterCell(td, r.actCons, CAND, r.actCons <= CAND); } },
       { key: "hotShare", label: t("dcHalf"), num: true, render: function (td, r) { meterCell(td, r.hotShare, halfLimit(), r.hotShare <= halfLimit()); } },
@@ -2284,7 +2331,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       { key: "cpuP95", label: t("thCpuP95"), num: true, fmt: pct, title: t("ttCpuP95"), group: G.r },
       { key: "cores", label: t("thCores"), num: true, fmt: function (v) { return v == null ? "\u2013" : num(v); }, group: G.r },
       { key: "retro", label: t("thRetro"), title: t("ttTierNotHost"), group: G.r, render: function (td, r) { badgeCell(td, r.retro, r.retroClass); } },
-      { key: "usable", label: t("cUsable") + " " + U.name, num: true, fmt: sz, title: t("ttUsable", thr(CPU_TARGET)), group: G.r },
+      { key: "usable", label: t("cUsable") + " " + U.name, num: true, fmt: sz, title: t("ttUsable", thr(CPU_TARGET), thr(THR)), group: G.r },
       { key: "p95", label: t("thP95Of", metricLabel()), title: t("ttP95Metric"), num: true, group: G.f, render: function (td, r) { barCell(td, r.p95, THR); } },
       { key: "max", label: t("thActiveMax"), num: true, fmt: pct, group: G.f },
       { key: "avg", label: t("thActiveAvg"), num: true, fmt: pct, title: t("ttActiveAvgDram"), group: G.f },

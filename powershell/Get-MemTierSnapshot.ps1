@@ -127,7 +127,7 @@ foreach ($server in $VCenterServer) {
         $inventory = Get-MemTierInventory -VI $connection.VI -Server $server -ExcludeVmPattern $ExcludeVmPattern
         Write-Host ("[*] {0}: reading {1} min of real-time statistics for {2} hosts and {3} VMs" -f $server, $WindowMinutes,
             $inventory.HostMeta.Count, @($inventory.Vms | Where-Object { $_.Collect }).Count) -ForegroundColor Yellow
-        $stats = Get-MemTierStatistics -VI $connection.VI -Inventory $inventory -StartUtc $startUtc -BatchSize $BatchSize
+        $stats = Get-MemTierStatistics -VI $connection.VI -Inventory $inventory -StartUtc $startUtc -EndUtc $nowUtc -BatchSize $BatchSize
 
         foreach ($mid in $inventory.HostMeta.Keys) {
             $h = $inventory.HostMeta[$mid]
@@ -221,12 +221,12 @@ foreach ($h in $hostObjects) {
 foreach ($key in $groups.Keys) {
     $members = $groups[$key]
     $stretched = $StretchedCluster.IsPresent -or ($StretchedClusterName -contains $members[0].cluster)
-    $dram = 0.0; $largest = 0.0; $mem = 0.0; $largestMem = 0.0; $p95 = 0.0; $max = 0.0; $consumed = 0.0; $consumedN = 0
+    $dram = 0.0; $largest = 0.0; $mem = 0.0; $largestMem = 0.0; $p95 = 0.0; $max = 0.0; $consumed = 0.0; $consumedN = 0; $activeAvg = 0.0
     foreach ($h in $members) {
         $dram += $h.dramMB; $largest = [math]::Max($largest, [double]$h.dramMB)
         $mem += $h.dramMB + $h.nvmeMB; $largestMem = [math]::Max($largestMem, [double]($h.dramMB + $h.nvmeMB))
         $p95 += $h.activeP95MB; $max += $h.activeMaxMB
-        if ($null -ne $h.consumedAvgMB) { $consumed += $h.consumedAvgMB; $consumedN++ }
+        if ($null -ne $h.consumedAvgMB) { $consumed += $h.consumedAvgMB; $consumedN++; if ($null -ne $h.activeAvgMB) { $activeAvg += $h.activeAvgMB } }
     }
     $capacity = Get-FailoverCapacity $stretched $dram $largest $members.Count
     $capacityMem = Get-FailoverCapacity $stretched $mem $largestMem $members.Count
@@ -235,7 +235,8 @@ foreach ($key in $groups.Keys) {
     # One host without consumed statistics would understate the cluster and fake a "Fits" verdict.
     $complete = $consumedN -eq $members.Count
     $consumedPct = if ($complete) { Get-Pct $consumed $capacityMem } else { $null }
-    $activeOverConsumed = if ($complete -and $consumed) { Get-Pct $p95 $consumed } else { $null }
+    # Average over average, the decision metric exactly as the trend report computes it.
+    $activeOverConsumed = if ($complete -and $consumed) { Get-Pct $activeAvg $consumed } else { $null }
     $clusterObjects.Add([pscustomobject][ordered]@{
             vc = $members[0].vc; cluster = $members[0].cluster; model = $(if ($stretched) { 'Stretched (50%)' } else { 'N+1' })
             hosts = $members.Count; dramMB = [long]$dram; capacityMB = [long]$capacity; capacityMemMB = [long]$capacityMem

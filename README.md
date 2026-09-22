@@ -33,7 +33,7 @@ The two cases where that pays off:
 | | Question | What the report gives you |
 |---|---|---|
 | 🛒 **Buying new hardware** | Can I buy half the DRAM plus an NVMe tier? | *New servers* verdict, `DRAM saved` (conservative and measured) per cluster |
-| 🧱 **Extending what you own** | CPU is fine, RAM is full — how much more fits? | *Retrofit* verdict, `Usable extra memory` per cluster, capped by CPU |
+| 🧱 **Extending what you own** | CPU is fine, RAM is full — how much more fits? | *Retrofit* verdict, `Usable extra memory` per cluster, capped by CPU and hot set |
 
 ## 🔍 But will it work for *your* clusters?
 
@@ -182,6 +182,8 @@ The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmwa
 * **Collector runs:** gaps and failed runs are visible, nothing fails silently.
 * **Language:** English and German, switchable in the report itself (the choice is remembered per browser).
 
+![Clusters: the three questions, and which runs out first (mock data)](docs/images/decision-board.png)
+
 ### Summary, simple or expert
 
 * **Summary** is the page for the customer or the budget owner: the verdict, the two buying
@@ -207,15 +209,21 @@ holds once consumed memory has grown into what the VMs are assigned (ESXi does n
 memory a guest has touched unless the host is under pressure, so consumed keeps creeping up for
 weeks). The **measured** figure, sized on consumed memory alone, is shown next to it as the best
 case. Hosts that **already run an NVMe tier** are left out: they have made their DRAM saving.
+A cluster whose conservative saving is zero — typically hosts that are heavily overcommitted, so
+assigned ÷ (1 + ratio) is already all the DRAM they have — is *Little to gain*, not *Full saving*.
+
+Hosts outside any cluster are sized one by one, each as its own group of one host.
 
 ### Existing hosts: does a tier add usable capacity?
 
 Only where memory is the bottleneck and the CPU is not: consumed P95 at or above `ram_bound_pct`
 of DRAM (70%) while **sustained CPU** stays at or below `cpu_idle_pct` (50%). Sustained CPU is the
 P95 of the per-interval averages; the P95 of the per-interval peaks is dominated by the busiest
-minutes and is shown next to it for context only. The extra memory is capped at what the CPU can
-run up to 80% sustained — capacity nobody can run VMs in is capacity on paper only, and the report
-shows that figure separately.
+minutes and is shown next to it for context only. The extra memory is filled by more of the same
+workload, so it brings CPU and hot set along. It is capped twice: at what the CPU can run up to 80%
+sustained, and at what keeps the hot set at or below 50% of DRAM — capacity nobody can run VMs in,
+or that would push hot pages onto NVMe, is capacity on paper only, and the report shows that figure
+separately.
 
 ### Simulating the tier size
 
@@ -231,7 +239,7 @@ becomes the binding constraint, a bigger tier adds capacity but no further DRAM 
 
 The sizing rounds up to a population you can actually order — 16, 32, 48, 64, 96, 128 and 256 GB
 modules, up to 48 per host — and names one, e.g. `20 × 32 GB`. Rounding costs something: on the
-mock fleet it turns 4.07 TB of theoretical saving into 3.50 TB of buildable saving, which is the
+mock fleet it turns 4.29 TB of theoretical saving into 3.92 TB of buildable saving, which is the
 number worth quoting. Populating every channel is what gives the bandwidth, so the report prefers
 more, smaller modules over fewer, larger ones at the same total.
 
@@ -296,6 +304,9 @@ BUYING NEW HARDWARE                      the same workload, sized with a 1:1 tie
     measured (best case): consumed stays where it is today
     DRAM needed = max( 202 , 336 / 2 ) = 202 GB   ->   DRAM saved = 182 GB
 
+    DRAM is bought in DIMMs, so both are rounded up to a population you can order:
+    202 GB becomes 16 x 16 GB = 256 GB, and on this one host both savings are 128 GB.
+
     active P95 / assigned = 101 / 512 = 20 %  <=  50 % / (1 + 1) = 25 %
     -> the tier alone sets the DRAM: assigned / 2 still holds the hot set (full saving)
 
@@ -309,9 +320,12 @@ EXTENDING HOSTS YOU ALREADY OWN          no new DRAM, add NVMe instead
 
     capacity with a 1:1 tier = DRAM x (1 + 1) = 384 x 2 = 768 GB
     extra on paper           = 768 - 336 (consumed peak) = 432 GB
-    usable extra memory      = min( extra on paper , consumed x (80 % / CPU - 1) )
-                               at 40 % CPU: min( 432 , 336 x (80 / 40 - 1) ) = 336 GB
-    valid while active P95 stays at or below 50 % of the 384 GB DRAM
+    the extra memory is filled by more of the same workload, so CPU and hot set grow with it:
+    usable extra memory      = min( extra on paper,
+                                    consumed x (80 % / CPU - 1),                    CPU up to 80 %
+                                    (50 % x DRAM - active P95) x consumed / active ) hot set up to 50 %
+                             = min( 432 , 336 x (80 / 40 - 1) , (192 - 101) x 336 / 101 )
+                             = min( 432 , 336 , 303 ) = 303 GB
 
 
 HOSTS THAT ALREADY HAVE A TIER           cold memory must not be counted twice
@@ -330,8 +344,6 @@ HOSTS THAT ALREADY HAVE A TIER           cold memory must not be counted twice
 legitimately exceeds their DRAM, and the part above DRAM is already on NVMe. Reporting all of
 `consumed − active` as movable cold memory would count that saving twice, so the report caps it at
 DRAM and shows what is already on NVMe in its own column.
-
-![Cluster failover headroom (mock data)](docs/images/cluster-failover.png)
 
 ## 🧩 Good to know
 

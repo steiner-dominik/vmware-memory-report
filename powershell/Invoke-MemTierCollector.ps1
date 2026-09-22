@@ -34,8 +34,9 @@
     Minutes of real-time data to read (max. 60). Defaults to IntervalMinutes; set it only to
     cover a gap deliberately.
 .PARAMETER ReportDir
-    Folder for MemTier_Report.html. Days, ThresholdPct, ColdPct, HotPct, Title, SupportContact,
-    StretchedCluster and StretchedClusterName are passed on to New-MemTierReport.ps1.
+    Folder for MemTier_Report.html. Days, CandidatePct, ThresholdPct, TierRatio, RamBoundPct, CpuIdlePct,
+    Language, ColdPct, HotPct, Title, SupportContact, StretchedCluster and StretchedClusterName are passed
+    on to New-MemTierReport.ps1.
 .PARAMETER NoReport
     Collect only, do not rebuild the report.
 .EXAMPLE
@@ -58,13 +59,15 @@ param (
     [int]$RetentionMonths = 13,
     [switch]$CompressOldMonths,
     [string]$ReportDir,
-    [ValidateRange(1, 800)][int]$Days = 30,
+    [ValidateRange(1, 400)][int]$Days = 30,
     [ValidateRange(1, 100)][double]$CandidatePct = 40,
     [ValidateRange(1, 100)][double]$ThresholdPct = 50,
     [ValidateRange(0.1, 8)][double]$TierRatio = 1.0,
+    [ValidateRange(1, 100)][double]$RamBoundPct = 70,
+    [ValidateRange(1, 100)][double]$CpuIdlePct = 50,
     [ValidateSet('en', 'de')][string]$Language = 'en',
-    [double]$ColdPct = 40,
-    [double]$HotPct = 75,
+    [ValidateRange(0, 100)][double]$ColdPct = 40,
+    [ValidateRange(0, 100)][double]$HotPct = 75,
     [string]$Title,
     [string]$SupportContact,
     [switch]$StretchedCluster,
@@ -102,7 +105,8 @@ function Invoke-VCenterCollection {
         $connection = Connect-MemTierVCenter -Server $Server -Credential $Cred
         $startUtc = $NowUtc.AddMinutes(-$WindowMinutes)
         $inventory = Get-MemTierInventory -VI $connection.VI -Server $Server -ExcludeVmPattern $ExcludeVmPattern
-        $stats = Get-MemTierStatistics -VI $connection.VI -Inventory $inventory -StartUtc $startUtc -BatchSize $BatchSize
+        # The window ends where it was planned to: a query that runs late must not reach into the next run's window.
+        $stats = Get-MemTierStatistics -VI $connection.VI -Inventory $inventory -StartUtc $startUtc -EndUtc $NowUtc -BatchSize $BatchSize
         $hostMeta = $inventory.HostMeta
         $counts = $inventory.Counts
 
@@ -207,7 +211,7 @@ finally {
 # Rebuild the report after the lock is released: a slow report must not block the next collection
 if (-not $NoReport) {
     $reportArgs = @{ DataDir = $DataDir; LogDir = $LogDir }
-    foreach ($name in 'ReportDir', 'Days', 'CandidatePct', 'ThresholdPct', 'TierRatio', 'Language', 'ColdPct', 'HotPct',
+    foreach ($name in 'ReportDir', 'Days', 'CandidatePct', 'ThresholdPct', 'TierRatio', 'RamBoundPct', 'CpuIdlePct', 'Language', 'ColdPct', 'HotPct',
         'Title', 'SupportContact', 'StretchedCluster', 'StretchedClusterName') {
         if ($PSBoundParameters.ContainsKey($name)) { $reportArgs[$name] = $PSBoundParameters[$name] }
     }

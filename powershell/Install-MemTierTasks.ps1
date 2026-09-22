@@ -37,9 +37,14 @@ param (
     [Parameter(Mandatory = $true)][string]$BaseDir,
     [ValidateSet('Fail', 'Warn', 'Ignore')][string]$InvalidCertificateAction = 'Fail',
     [ValidateSet(15, 30, 60)][int]$IntervalMinutes = 60,
-    [ValidateRange(1, 800)][int]$Days = 30,
+    [ValidateRange(1, 400)][int]$Days = 30,
     [ValidateRange(1, 100)][double]$CandidatePct = 40,
     [ValidateRange(1, 100)][double]$ThresholdPct = 50,
+    [ValidateRange(0.1, 8)][double]$TierRatio = 1.0,
+    [ValidateRange(1, 100)][double]$RamBoundPct = 70,
+    [ValidateRange(1, 100)][double]$CpuIdlePct = 50,
+    [ValidateRange(0, 100)][double]$ColdPct = 40,
+    [ValidateRange(0, 100)][double]$HotPct = 75,
     [ValidateSet('en', 'de')][string]$Language = 'en',
     [switch]$CompressOldMonths,
     [switch]$StretchedCluster,
@@ -98,6 +103,11 @@ $collectArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$here
     " -ReportDir `"$BaseDir\reports`" -Days $Days -IntervalMinutes $IntervalMinutes" +
     " -CandidatePct $($CandidatePct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
     " -ThresholdPct $($ThresholdPct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
+    " -TierRatio $($TierRatio.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
+    " -RamBoundPct $($RamBoundPct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
+    " -CpuIdlePct $($CpuIdlePct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
+    " -ColdPct $($ColdPct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
+    " -HotPct $($HotPct.ToString([System.Globalization.CultureInfo]::InvariantCulture))" +
     " -Language $Language" +
     $(if ($CompressOldMonths) { ' -CompressOldMonths' } else { '' }) +
     $(if ($StretchedCluster) { ' -StretchedCluster' } else { '' }) +

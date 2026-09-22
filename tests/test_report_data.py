@@ -67,6 +67,61 @@ class ConfigTest(unittest.TestCase):
     def test_unsupported_language_falls_back(self):
         self.assertEqual(config(self.tmp, language="fr").language, "en")
 
+    def test_invalid_numbers_fall_back_instead_of_breaking_the_report(self):
+        # threshold 0 divides by zero in the sizing; a typo must not end in a traceback
+        cfg = config(self.tmp, threshold_pct="0", tier_ratio="abc", cpu_idle_pct="150", candidate_pct="35")
+        self.assertEqual((cfg.threshold_pct, cfg.tier_ratio, cfg.cpu_idle_pct, cfg.candidate_pct), (50.0, 1.0, 50.0, 35.0))
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_dict({"collector": {"interval_minutes": "15", "window_minutes": "soon"}})
+        self.assertEqual(mt.Config.from_parser(parser, self.tmp).window_minutes, 15)
+
+
+class QueryWindowTest(unittest.TestCase):
+    def test_every_query_ends_at_the_run_timestamp(self):
+        """startTime is exclusive and endTime inclusive, so consecutive windows tile exactly."""
+        client = mt.ViJsonClient("vc", "u", "p")
+        client.content = {"perfManager": {"value": "PerfMgr"}}
+        sent = []
+        client.invoke = lambda *args: sent.append(args[3]) or []
+        start, end = _dt.datetime(2026, 9, 15, 10, 0), _dt.datetime(2026, 9, 15, 11, 0)
+        mt.perf_batches(client, "HostSystem", ["h1", "h2", "h3"], {"mem.active.average": 1}, start, 2, end=end)
+        specs = [spec for body in sent for spec in body["querySpec"]]
+        self.assertEqual(len(specs), 3)
+        for spec in specs:
+            self.assertEqual((spec["startTime"], spec["endTime"]), ("2026-09-15T10:00:00Z", "2026-09-15T11:00:00Z"))
+
+
+class ConcurrentReportTest(unittest.TestCase):
+    def test_two_writers_do_not_share_a_temporary_file(self):
+        """The container can rebuild the report while a collection writes it."""
+        import threading
+        tmp = tempfile.mkdtemp()
+        try:
+            cfg = config(tmp)
+            os.makedirs(cfg.data_dir)
+            ts = mt.iso(mt.utcnow() - _dt.timedelta(hours=1))
+            mt.append_csv(os.path.join(cfg.data_dir, "run-%s.csv" % ts[:7]), mt.RUN_FIELDS,
+                          [{"Timestamp": ts, "VCenter": "vc", "Status": "ok"}])
+            errors = []
+
+            def build():
+                try:
+                    for _ in range(5):
+                        mt.write_report(cfg, 30)
+                except Exception as exc:  # noqa: BLE001 - any failure is the finding
+                    errors.append(exc)
+            threads = [threading.Thread(target=build) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [])
+            with io.open(os.path.join(cfg.report_dir, mt.REPORT_NAME), encoding="utf-8") as handle:
+                self.assertTrue(handle.read().rstrip().endswith("</html>"))
+            self.assertEqual([n for n in os.listdir(cfg.report_dir) if n.endswith(".tmp")], [])
+        finally:
+            shutil.rmtree(tmp)
+
 
 class ReportDataTest(unittest.TestCase):
     """Two hosts in one cluster: one plain, one with an NVMe tier already in use."""
@@ -396,6 +451,87 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(len(decision), 1)
         for r in verdicts[1:]:
             self.assertEqual([k for k in r["kpis"] if k.startswith("Active vs. consumed")], decision)
+
+
+class VerdictLogicTest(unittest.TestCase):
+    """Fleets built directly as report data, one per rule the two buying decisions follow."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("node"):
+            raise unittest.SkipTest("node is not installed")
+        cls.tmp = tempfile.mkdtemp()
+        with io.open(TEMPLATE, encoding="utf-8") as handle:
+            cls.template = handle.read()
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "tmp"):
+            shutil.rmtree(cls.tmp)
+
+    @staticmethod
+    def host(name, cluster, dram, assigned, active, consumed, cpu):
+        """A steady host over 30 days, sizes in GB."""
+        t0 = 1780000000 // 3600 * 3600
+        gb = 1024
+        s = [[t0 + i * 3600, 10, assigned * gb, active * gb, active * gb, active * gb, consumed * gb, 0, 0, dram * gb,
+              consumed * gb, 0, cpu, cpu, cpu, None, None] for i in range(30 * 24)]
+        return {"key": "vc|" + name, "vc": "vc", "name": name, "cluster": cluster, "tiering": "", "dramMB": dram * gb,
+                "nvmeMB": 0, "physMB": dram * gb, "cores": 32, "threads": 64, "mhz": 2500, "s": s}
+
+    def render(self, name, hosts, mode="simple"):
+        meta = {"title": "t", "support": "", "generatedUtc": "2026-06-01T00:00:00Z", "fromUtc": "2026-05-01T00:00:00Z",
+                "toUtc": "2026-06-01T00:00:00Z", "days": 30, "lang": "en", "candidatePct": 40, "thresholdPct": 50,
+                "tierRatio": 1, "coldPct": 40, "hotPct": 75, "ramBoundPct": 70, "cpuIdlePct": 50, "bucketHours": 1,
+                "intervalMinutes": 60, "vcenters": ["vc"], "builder": "test",
+                "failover": {"stretched": False, "stretchedClusters": []}}
+        path = os.path.join(self.tmp, name + ".html")
+        payload = mt.script_safe_json({"schema": 4, "meta": meta, "runs": [], "hosts": hosts, "vms": []})
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write(self.template.replace(mt.DATA_PLACEHOLDER, payload, 1))
+        out = subprocess.run(["node", os.path.join(ROOT, "tests", "run_report.js"), path, mode, "100", "en"],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        r = json.loads(out.stdout)
+        r["new"], r["retro"] = [re.sub(r"\s+", " ", c) for c in r["cases"]]
+        return r
+
+    def test_usable_extra_memory_keeps_the_hot_set_within_the_limit(self):
+        # The README example: 384 GB DRAM, 336 consumed, 101 active, 40% CPU. The CPU would allow
+        # 336 GB more, but at 30% hot that takes the hot set to 202 GB - past 50% of 384 GB.
+        r = self.render("retro", [self.host("r1", "R", 384, 512, 101, 336, 40)])
+        self.assertIn("303 GB of usable extra memory", r["retro"])
+        usable = r["sizing"][0].index("Usable extra memory GB")
+        self.assertEqual(r["sizing"][1][usable], "303")
+
+    def test_standalone_hosts_are_sized_one_by_one(self):
+        r = self.render("standalone", [self.host("esx1", "(standalone)", 256, 300, 30, 200, 20),
+                                       self.host("esx2", "(standalone)", 256, 300, 30, 200, 20)])
+        self.assertIn("Full saving", r["new"])
+        self.assertNotIn("No workload", r["new"])
+        self.assertEqual(sorted(row[0] for row in r["sizing"][1:]), ["esx1 (standalone)", "esx2 (standalone)"])
+
+    def test_the_badge_follows_the_clusters_that_have_a_saving(self):
+        # A big hot cluster pulls the fleet ratio above 40%; the small cold one still saves DRAM.
+        hosts = [self.host("h%d" % i, "Hot", 1024, 1200, 500, 700, 30) for i in range(4)]
+        hosts += [self.host("c%d" % i, "Cold", 512, 800, 40, 400, 30) for i in range(2)]
+        r = self.render("mixed", hosts)
+        self.assertIn("Full saving", r["new"])
+        self.assertNotIn("Little to gain", r["new"])
+        self.assertNotIn("Too much of the memory", r["new"])
+        self.assertIn("5.0%", r["new"])      # active P95 / assigned of the cold cluster alone
+
+    def test_a_saving_of_nothing_is_little_to_gain(self):
+        # Overcommitted: assigned / 2 is already all the DRAM these hosts have.
+        r = self.render("overcommitted", [self.host("o%d" % i, "O", 256, 600, 30, 200, 20) for i in range(2)])
+        self.assertIn("Little to gain", r["new"])
+        self.assertIn("no more DRAM than they would need", r["new"])
+        self.assertNotIn("Full saving", r["new"])
+
+    def test_same_figure_after_dimm_rounding_is_not_blamed_on_the_hot_set(self):
+        r = self.render("rounded", [self.host("r1", "R", 384, 512, 101, 336, 40)])
+        self.assertIn("rounds up to the same buildable DIMM population", r["new"])
+        self.assertNotIn("The hot set sets the DRAM", r["new"])
 
 
 if __name__ == "__main__":

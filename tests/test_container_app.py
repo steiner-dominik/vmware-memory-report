@@ -228,6 +228,17 @@ class EntityTest(unittest.TestCase):
         self.assertEqual(states["sensor.memtier_cold_in_dram"][0], 4096)
         self.assertIn("perf query failed", states["sensor.memtier_status"][1]["message"])
 
+    def test_zero_is_a_reading_not_unknown(self):
+        pub = app_mod.EntityPublisher("token", "memtier")
+        latest = {"timestamp": "2026-09-15T10:05:00Z", "hostsConnected": 0, "vmsOn": 0,
+                  "activeOverConsumedPct": 0.0, "coldInDramMB": 0, "vcenters": []}
+        states = dict((e, s) for e, s, a in pub.states("ok", latest))
+        self.assertEqual(states["sensor.memtier_cold_in_dram"], 0)
+        self.assertEqual(states["sensor.memtier_active_of_consumed"], 0.0)
+        self.assertEqual(states["sensor.memtier_hosts"], 0)
+        states = dict((e, s) for e, s, a in pub.states("ok", {"coldInDramMB": None}))
+        self.assertEqual(states["sensor.memtier_cold_in_dram"], "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

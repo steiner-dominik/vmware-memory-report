@@ -242,11 +242,9 @@ def load_settings(environ=None, options_file=OPTIONS_FILE):
             errors.append("exclude_vm_pattern: invalid regular expression (%s)" % exc)
     if values["ca_file"] and not os.path.isfile(values["ca_file"]):
         errors.append("ca_file: %s does not exist" % values["ca_file"])
-    for name, low, high in (("report_days", 1, 400), ("candidate_pct", 1, 100), ("threshold_pct", 1, 100),
-                            ("tier_ratio", 0.1, 8), ("ram_bound_pct", 1, 100), ("cpu_idle_pct", 1, 100),
-                            ("cold_pct", 0, 100),
-                            ("hot_pct", 0, 100), ("retention_months", 0, 1200), ("timeout_seconds", 5, 3600),
-                            ("batch_size", 1, 1000)):
+    ranges = [("report_days", 1, 400), ("retention_months", 0, 1200), ("timeout_seconds", 5, 3600), ("batch_size", 1, 1000)]
+    ranges += [(name, low, high) for name, (low, high) in sorted(mt.RANGES.items())]
+    for name, low, high in ranges:
         if not low <= values[name] <= high:
             errors.append("%s: must be between %s and %s, got %s" % (name, low, high, values[name]))
     return Settings(values, source, data_dir, port, ui_username, ui_password, errors)
@@ -401,6 +399,12 @@ class EntityPublisher(object):
 
     def states(self, status, latest):
         p = self.prefix
+
+        def value(key):
+            # 0 is a real reading (no cold memory left in DRAM, say); only a missing value is unknown.
+            found = (latest or {}).get(key)
+            return "unknown" if found is None or found == "" else found
+
         peak = (latest or {}).get("peak") or {}
         message = "; ".join("%s: %s" % (v["vcenter"], v["message"]) for v in (latest or {}).get("vcenters", []) if v["message"])
         return [
@@ -410,12 +414,12 @@ class EntityPublisher(object):
                 # Which per-tier performance counters this vCenter publishes, if any. Tier sizes
                 # are always available; current tier usage depends on these existing.
                 "tier_counters": (latest or {}).get("tierCounters") or []}),
-            ("sensor.%s_last_collection" % p, (latest or {}).get("timestamp") or "unknown", {
+            ("sensor.%s_last_collection" % p, value("timestamp"), {
                 "friendly_name": "Memory tiering last collection", "device_class": "timestamp", "icon": "mdi:clock-check-outline"}),
-            ("sensor.%s_hosts" % p, (latest or {}).get("hostsConnected", "unknown"), {
+            ("sensor.%s_hosts" % p, value("hostsConnected"), {
                 "friendly_name": "Memory tiering hosts collected", "unit_of_measurement": "hosts",
                 "state_class": "measurement", "icon": "mdi:server", "hosts_total": (latest or {}).get("hosts")}),
-            ("sensor.%s_vms" % p, (latest or {}).get("vmsOn", "unknown"), {
+            ("sensor.%s_vms" % p, value("vmsOn"), {
                 "friendly_name": "Memory tiering VMs powered on", "unit_of_measurement": "VMs",
                 "state_class": "measurement", "icon": "mdi:monitor-multiple"}),
             ("sensor.%s_peak_host_active" % p, peak.get("pct", "unknown"), {
@@ -425,12 +429,12 @@ class EntityPublisher(object):
                 "threshold_pct": (latest or {}).get("thresholdPct"),
                 "description": "P95 active memory of the busiest host in the last collection, as % of its DRAM"}),
             # The metric the tiering decision is actually made on.
-            ("sensor.%s_active_of_consumed" % p, (latest or {}).get("activeOverConsumedPct") or "unknown", {
+            ("sensor.%s_active_of_consumed" % p, value("activeOverConsumedPct"), {
                 "friendly_name": "Memory tiering active of consumed memory", "unit_of_measurement": "%",
                 "state_class": "measurement", "icon": "mdi:fire",
                 "description": "Active over consumed memory across all hosts - at or below the candidate "
                                "threshold most of the memory the hosts back is cold and an NVMe tier can absorb it"}),
-            ("sensor.%s_cold_in_dram" % p, (latest or {}).get("coldInDramMB") or "unknown", {
+            ("sensor.%s_cold_in_dram" % p, value("coldInDramMB"), {
                 "friendly_name": "Memory tiering cold memory in DRAM", "unit_of_measurement": "MB",
                 "device_class": "data_size", "state_class": "measurement", "icon": "mdi:snowflake",
                 "description": "Consumed minus active memory that is still held in DRAM - what an NVMe tier would move"}),

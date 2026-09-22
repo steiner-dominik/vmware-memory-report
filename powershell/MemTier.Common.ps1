@@ -132,7 +132,7 @@ function ConvertTo-MemTierInt([string]$Text) {
     $l = 0L
     if ([long]::TryParse($t, [System.Globalization.NumberStyles]::Integer, $script:Inv, [ref]$l)) { return $l }
     $d = 0.0
-    if ([double]::TryParse($t, [System.Globalization.NumberStyles]::Float, $script:Inv, [ref]$d)) { return [long][math]::Round($d) }
+    if ([double]::TryParse($t, [System.Globalization.NumberStyles]::Float, $script:Inv, [ref]$d)) { return [long][math]::Floor($d + 0.5) }
     return $null
 }
 
@@ -433,7 +433,7 @@ function Get-MemTierInventory {
         $mid = $h.MoRef.Value
         $cluster = if ($h.Parent -and $clusterNames.ContainsKey($h.Parent.Value)) { $clusterNames[$h.Parent.Value] } else { '(standalone)' }
         $physMB = Get-RoundHalfUp ([double]$h.Hardware.MemorySize / 1048576.0)
-        $dramMB = $physMB; $nvmeMB = 0L; $tiering = ''
+        $dramMB = $physMB; $nvmeMB = 0L; $tiering = ''; $dramTiers = @()
         if ($tierViews.ContainsKey($mid)) {
             $tv = $tierViews[$mid]
             if ($tv.Hardware.MemoryTieringType) { $tiering = [string]$tv.Hardware.MemoryTieringType }
@@ -441,14 +441,14 @@ function Get-MemTierInventory {
             if ($tiers.Count -gt 0) {
                 $dram = 0.0; $nvme = 0.0
                 foreach ($tier in $tiers) {
-                    if ([string]$tier.Type -eq 'DRAM') { $dram += [double]$tier.Size } else { $nvme += [double]$tier.Size }
+                    if ([string]$tier.Type -eq 'DRAM') { $dram += [double]$tier.Size; $dramTiers += [string]$tier.Name } else { $nvme += [double]$tier.Size }
                 }
                 if ($dram -gt 0) { $dramMB = Get-RoundHalfUp ($dram / 1048576.0) }
                 $nvmeMB = Get-RoundHalfUp ($nvme / 1048576.0)
             }
         }
         $hostMeta[$mid] = @{
-            MoRef = $h.MoRef; Name = $h.Name; Cluster = $cluster; State = [string]$h.Runtime.ConnectionState
+            MoRef = $h.MoRef; Name = $h.Name; Cluster = $cluster; State = [string]$h.Runtime.ConnectionState; DramTiers = $dramTiers
             Maint = [bool]$h.Runtime.InMaintenanceMode; Phys = $physMB; Dram = $dramMB; Nvme = $nvmeMB; Tiering = $tiering
             Cores = if ($h.Hardware -and $h.Hardware.CpuInfo) { [long]$h.Hardware.CpuInfo.NumCpuCores } else { $null }
             Threads = if ($h.Hardware -and $h.Hardware.CpuInfo) { [long]$h.Hardware.CpuInfo.NumCpuThreads } else { $null }
@@ -540,7 +540,7 @@ function Get-MemTierTierCounters {
 
 function Invoke-MemTierPerfQuery {
     <# Queries real-time stats for a batch; splits the batch on failure and skips entities that fail alone. #>
-    param($PerfManager, [object[]]$Entities, $CounterIds, [datetime]$StartUtc, [hashtable]$Results, [System.Collections.Generic.List[string]]$Failed, $PerInstance)
+    param($PerfManager, [object[]]$Entities, $CounterIds, [datetime]$StartUtc, [hashtable]$Results, [System.Collections.Generic.List[string]]$Failed, $PerInstance, $EndUtc)
     if ($Entities.Count -eq 0) { return }
     if ($null -eq $PerInstance) { $PerInstance = @() }
     $perInstanceSet = @{}
@@ -558,7 +558,8 @@ function Invoke-MemTierPerfQuery {
     foreach ($e in $Entities) {
         $s = New-Object VMware.Vim.PerfQuerySpec
         $s.Entity = $e
-        $s.StartTime = $StartUtc
+        $s.StartTime = $StartUtc      # exclusive
+        if ($EndUtc) { $s.EndTime = $EndUtc }   # inclusive: consecutive windows tile without overlap
         $s.IntervalId = 20
         $s.Format = 'normal'
         $s.MetricId = $metricIds.ToArray()
@@ -575,8 +576,8 @@ function Invoke-MemTierPerfQuery {
         }
         Write-MemTierLog ("perf batch of {0} failed ({1}) - splitting" -f $Entities.Count, $_.Exception.Message) 'DEBUG'
         $half = [int][math]::Floor($Entities.Count / 2)
-        Invoke-MemTierPerfQuery $PerfManager $Entities[0..($half - 1)] $CounterIds $StartUtc $Results $Failed $PerInstance
-        Invoke-MemTierPerfQuery $PerfManager $Entities[$half..($Entities.Count - 1)] $CounterIds $StartUtc $Results $Failed $PerInstance
+        Invoke-MemTierPerfQuery $PerfManager $Entities[0..($half - 1)] $CounterIds $StartUtc $Results $Failed $PerInstance $EndUtc
+        Invoke-MemTierPerfQuery $PerfManager $Entities[$half..($Entities.Count - 1)] $CounterIds $StartUtc $Results $Failed $PerInstance $EndUtc
         return
     }
     $byId = @{}
@@ -610,7 +611,7 @@ function Get-MemTierStatistics {
           HostsFailed; VmsFailed; LiveHosts
         }
     #>
-    param($VI, $Inventory, [datetime]$StartUtc, [int]$BatchSize = 50)
+    param($VI, $Inventory, [datetime]$StartUtc, $EndUtc, [int]$BatchSize = 50)
     $si = Get-View -Server $VI ServiceInstance
     $perfManager = Get-View -Server $VI -Id $si.Content.PerfManager
     $counterIndex = Get-MemTierCounterIndex $perfManager
@@ -637,7 +638,7 @@ function Get-MemTierStatistics {
         $entities = $pass.Entities
         for ($i = 0; $i -lt $entities.Count; $i += $BatchSize) {
             $end = [math]::Min($i + $BatchSize, $entities.Count) - 1
-            Invoke-MemTierPerfQuery $perfManager @($entities[$i..$end]) $pass.Ids $StartUtc $raw $failed $pass.PerInstance
+            Invoke-MemTierPerfQuery $perfManager @($entities[$i..$end]) $pass.Ids $StartUtc $raw $failed $pass.PerInstance $EndUtc
         }
         foreach ($eid in $raw.Keys) {
             $series = $raw[$eid]
@@ -647,7 +648,7 @@ function Get-MemTierStatistics {
                 Balloon = Get-MemTierSummary $series['mem.vmmemctl.average']
                 Swap = Get-MemTierSummary $series[$pass.Swap]
                 Cpu = Get-MemTierPercentSummary $series['cpu.usage.average']
-                Tier = Get-MemTierTierConsumed $series
+                Tier = Get-MemTierTierConsumed $series $(if ($pass.Kind -eq 'Hosts' -and $Inventory.HostMeta.ContainsKey($eid)) { $Inventory.HostMeta[$eid].DramTiers } else { @() })
             }
         }
         $out[$pass.Kind + 'Failed'] = $failed.Count
@@ -658,11 +659,14 @@ function Get-MemTierStatistics {
 function Get-MemTierTierConsumed {
     <#
         Average machine memory consumed per tier, in MB, from the per-instance tier counter.
-        The instance is the tier's name; anything that is not DRAM is the tier being added.
+        The instance is the tier's name as MemoryTierInfo reports it: the tiers of type DRAM are
+        named in DramTierNames (plain "DRAM" when MemoryTierInfo is unavailable), anything else is
+        the tier being added - the same rule as memtier.py.
         Returns @{ Dram; Nvme } with $null values where the counter is absent (every vCenter
         before 9.0), so the report falls back to deriving the split.
     #>
-    param($Series)
+    param($Series, [string[]]$DramTierNames)
+    $dramNames = @($DramTierNames | Where-Object { $_ })
     $dram = $null; $nvme = $null
     foreach ($key in $Series.Keys) {
         $parts = $key -split '\|', 2
@@ -674,7 +678,9 @@ function Get-MemTierTierConsumed {
         foreach ($v in $values) { if ($null -ne $v -and $v -ge 0) { $sum += [double]$v; $n++ } }
         if ($n -eq 0) { continue }
         $avg = $sum / $n
-        if ($parts[1] -eq 'DRAM') {
+        # -contains / -eq compare case-insensitively, as memtier.py does with lower()
+        $isDram = if ($dramNames.Count) { $dramNames -contains $parts[1] } else { $parts[1] -eq 'DRAM' }
+        if ($isDram) {
             if ($null -eq $dram) { $dram = 0.0 }
             $dram += $avg
         }

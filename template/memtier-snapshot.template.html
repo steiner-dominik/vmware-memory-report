@@ -395,14 +395,15 @@ footer a { color: var(--accent); }
   fillSelect($("vmPower"), uniq(D.vms.map(function (v) { return v.powerState; })), "All power states");
   fillSelect($("vmStatus"), ["Cold", "Warm", "Hot"].concat(uniq(D.vms.map(function (v) { return v.status; })).filter(function (s) { return ["Cold", "Warm", "Hot"].indexOf(s) < 0; })), "All statuses");
 
-  // active over the memory that actually backs the host / VM - the tiering signal
+  // active over the memory that actually backs the host / VM - the tiering signal. Averages over
+  // averages, exactly as the trend report computes its decision metric, so the two agree.
   D.hosts.forEach(function (h) {
-    h.actCons = h.consumedAvgMB && h.activeP95MB != null ? h.activeP95MB / h.consumedAvgMB * 100 : null;
-    h.coldInDramMB = h.consumedAvgMB != null && h.activeP95MB != null && h.dramMB
-      ? Math.max(0, Math.min(h.consumedAvgMB, h.dramMB) - h.activeP95MB) : null;
+    h.actCons = h.consumedAvgMB && h.activeAvgMB != null ? h.activeAvgMB / h.consumedAvgMB * 100 : null;
+    h.coldInDramMB = h.consumedAvgMB != null && h.activeAvgMB != null && h.dramMB
+      ? Math.max(0, Math.min(h.consumedAvgMB, h.dramMB) - h.activeAvgMB) : null;
   });
   D.vms.forEach(function (v) {
-    v.actCons = v.consumedAvgMB && v.activeP95MB != null ? v.activeP95MB / v.consumedAvgMB * 100 : null;
+    v.actCons = v.consumedAvgMB && v.activeAvgMB != null ? v.activeAvgMB / v.consumedAvgMB * 100 : null;
   });
 
   if (!D.hosts.length && !D.vms.length) { $("main").hidden = true; $("nodata").hidden = false; }
@@ -502,7 +503,7 @@ footer a { color: var(--accent); }
           ["Active max", pct(h.activeMaxPct)],
           ["Consumed avg", pct(h.consumedAvgMB == null ? null : h.consumedAvgMB / h.dramMB * 100) + " • " + szu(h.consumedAvgMB), "var(--series-2)"],
           ["Configured", pct(h.assignedPctOfDram) + " • " + szu(h.assignedMB), "var(--series-3)"],
-          ["Active / consumed", pct(h.consumedAvgMB ? h.activeP95MB / h.consumedAvgMB * 100 : null)],
+          ["Active / consumed", pct(h.actCons)],
           ["Powered-on VMs", num(h.vmsOn)], ["DRAM", szu(h.dramMB)]];
       });
       c.appendChild(lab); c.appendChild(plot);
@@ -517,23 +518,23 @@ footer a { color: var(--accent); }
       (groups[k] = groups[k] || []).push(h);
     });
     var rows = Object.keys(groups).map(function (k) {
-      var m = groups[k], st = isStretched(m[0].cluster), dram = 0, big = 0, mem = 0, bigMem = 0, p = 0, mx = 0, cons = 0, consN = 0;
+      var m = groups[k], st = isStretched(m[0].cluster), dram = 0, big = 0, mem = 0, bigMem = 0, p = 0, mx = 0, cons = 0, consN = 0, avg = 0;
       var cold = 0, onNvme = 0;
       m.forEach(function (h) {
         dram += h.dramMB; big = Math.max(big, h.dramMB); mem += h.dramMB + (h.nvmeMB || 0); bigMem = Math.max(bigMem, h.dramMB + (h.nvmeMB || 0));
         p += h.activeP95MB; mx += h.activeMaxMB || 0;
         if (h.consumedAvgMB != null) {
-          cons += h.consumedAvgMB; consN++;
+          cons += h.consumedAvgMB; consN++; avg += h.activeAvgMB || 0;
           // On a host with an NVMe tier, consumed memory above DRAM is already served by the
           // tier. Counting it as "cold in DRAM" would promise the same saving a second time.
-          cold += Math.max(0, Math.min(h.consumedAvgMB, h.dramMB) - h.activeP95MB);
+          cold += Math.max(0, Math.min(h.consumedAvgMB, h.dramMB) - (h.activeAvgMB || 0));
           onNvme += h.nvmeMB ? Math.min(h.nvmeMB, Math.max(0, h.consumedAvgMB - h.dramMB)) : 0;
         }
       });
       var cap = failoverCapacity(st, dram, big, m.length), capMem = failoverCapacity(st, mem, bigMem, m.length);
       // One host without consumed statistics would understate the cluster and fake a "Fits" verdict.
       var p95Pct = p / cap * 100, maxPct = mx / cap * 100, consPct = consN === m.length ? cons / capMem * 100 : null;
-      var actCons = consN === m.length && cons ? p / cons * 100 : null;
+      var actCons = consN === m.length && cons ? avg / cons * 100 : null;
       return { vc: m[0].vc, cluster: m[0].cluster, model: st ? "Stretched (50%)" : "N+1", hosts: m.length, dramMB: dram, capacityMB: cap,
         p95Pct: p95Pct, maxPct: maxPct, verdict: verdictOf(p95Pct, maxPct), consPct: consPct, capacity: capacityVerdict(consPct),
         actCons: actCons, coldMB: consN === m.length ? cold : null, onNvmeMB: consN === m.length ? onNvme : null };
@@ -549,7 +550,7 @@ footer a { color: var(--accent); }
       { key: "capacityMB", label: "Surviving DRAM " + U.name, num: true, fmt: sz, title: "N+1: without the largest host • stretched: one site (50%)" },
       { key: "p95Pct", label: "Active P95", num: true, render: function (td, r) { barCell(td, r.p95Pct, M.thresholdPct); } },
       { key: "verdict", label: "Tiering", render: function (td, r) { badge(td, r.verdict); } },
-      { key: "actCons", label: "Active / consumed", num: true, fmt: pct, title: "Active P95 over consumed memory - the lower, the more cold memory an NVMe tier can absorb" },
+      { key: "actCons", label: "Active / consumed", num: true, fmt: pct, title: "Average active over average consumed memory - the lower, the more cold memory an NVMe tier can absorb" },
       { key: "coldMB", label: "Cold in DRAM " + U.name, num: true, fmt: sz, title: "Consumed minus active P95, capped at DRAM - on a host with a tier the part above DRAM is already on NVMe" },
       { key: "onNvmeMB", label: "On NVMe " + U.name, num: true, fmt: function (v) { return v ? sz(v) : "–"; }, title: "Consumed above DRAM - already served by the NVMe tier" },
       { key: "consPct", label: "Consumed", num: true, render: function (td, r) { barCell(td, r.consPct, null); } },
@@ -599,8 +600,8 @@ footer a { color: var(--accent); }
       { key: "assignedMB", label: "Configured " + U.name, num: true, fmt: sz },
       { key: "assignedPctOfDram", label: "Configured / DRAM", num: true, fmt: pct },
       { key: "consumedAvgMB", label: "Consumed " + U.name, num: true, fmt: sz },
-      { key: "actCons", label: "Active / consumed", num: true, fmt: pct, title: "Active P95 over consumed memory - the decision metric, lower is better" },
-      { key: "coldInDramMB", label: "Cold in DRAM " + U.name, num: true, fmt: function (v) { return v == null ? "–" : sz(v); }, title: "Consumed minus active P95, capped at DRAM - what an NVMe tier would move" },
+      { key: "actCons", label: "Active / consumed", num: true, fmt: pct, title: "Average active over average consumed memory - the decision metric, lower is better" },
+      { key: "coldInDramMB", label: "Cold in DRAM " + U.name, num: true, fmt: function (v) { return v == null ? "–" : sz(v); }, title: "Consumed minus active (averages), capped at DRAM - what an NVMe tier would move" },
       { key: "activeAvgPct", label: "Active avg", num: true, fmt: pct },
       { key: "activeP95Pct", label: "Active P95", num: true, render: function (td, r) { barCell(td, r.activeP95Pct, M.thresholdPct); } },
       { key: "activeMaxPct", label: "Active max", num: true, fmt: pct },
@@ -630,7 +631,7 @@ footer a { color: var(--accent); }
       { key: "name", label: "VM" }, { key: "powerState", label: "State" }, { key: "cluster", label: "Cluster" }, { key: "host", label: "Host" },
       { key: "assignedMB", label: "Configured GB", num: true, fmt: gb1 },
       { key: "consumedAvgMB", label: "Consumed GB", num: true, fmt: gb1 },
-      { key: "actCons", label: "Active / consumed", num: true, fmt: pct, title: "Active P95 over the memory actually backing this VM" },
+      { key: "actCons", label: "Active / consumed", num: true, fmt: pct, title: "Average active over the memory actually backing this VM" },
       { key: "activeAvgMB", label: "Active avg GB", num: true, fmt: gb1 },
       { key: "activeAvgPct", label: "Active avg", num: true, fmt: pct },
       { key: "activeP95Pct", label: "Active P95", num: true, render: function (td, r) { barCell(td, r.activeP95Pct, null); } },

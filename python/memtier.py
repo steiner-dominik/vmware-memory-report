@@ -42,6 +42,7 @@ import socket
 import ssl
 import stat
 import sys
+import threading
 import time
 from urllib.parse import quote, unquote
 
@@ -85,6 +86,12 @@ LANGUAGES = ("en", "de")
 DATA_PLACEHOLDER = "/*__MEMTIER_DATA__*/null"
 # Rebuilt and overwritten after every collection; the CSV files keep the full history.
 REPORT_NAME = "MemTier_Report.html"
+# Valid ranges of the report thresholds, shared by the config file, the command line and the container.
+# A threshold of 0 would divide by zero in the sizing, one above 100 would make every verdict pass.
+RANGES = {
+    "candidate_pct": (1, 100), "threshold_pct": (1, 100), "tier_ratio": (0.1, 8),
+    "ram_bound_pct": (1, 100), "cpu_idle_pct": (1, 100), "cold_pct": (0, 100), "hot_pct": (0, 100),
+}
 
 DEFAULT_CONFIG = """\
 # VMware memory tiering collector - configuration
@@ -340,45 +347,61 @@ class Config(object):
             value = parser.get(section, key, fallback="").strip() or default
             return value if os.path.isabs(value) else os.path.normpath(os.path.join(base, value))
 
+        def number(section, key, default, low, high, cast=float):
+            """A number from the config; a typo or an out-of-range value warns and falls back to the default."""
+            text = parser.get(section, key, fallback="").strip()
+            if not text:
+                return default
+            try:
+                value = cast(text)
+            except ValueError:
+                LOG.warning("[%s] %s = %r is not a number - using %s", section, key, text,
+                            "the default" if default is None else default)
+                return default
+            if (low is not None and value < low) or (high is not None and value > high):
+                LOG.warning("[%s] %s = %s is outside %s..%s - using %s", section, key, text, low, high, default)
+                return default
+            return value
+
         self.servers = [s.strip() for s in parser.get("vcenter", "servers", fallback="").split(",") if s.strip()]
         self.username = parser.get("vcenter", "username", fallback="").strip()
         self.password = parser.get("vcenter", "password", fallback="") or os.environ.get("MEMTIER_PASSWORD", "")
         self.verify_tls = to_bool(parser.get("vcenter", "verify_tls", fallback="true"), True)
         self.ca_file = parser.get("vcenter", "ca_file", fallback="").strip() or None
         self.api_release = parser.get("vcenter", "api_release", fallback="").strip() or None
-        self.timeout = parser.getint("vcenter", "timeout_seconds", fallback=120)
+        self.timeout = number("vcenter", "timeout_seconds", 120, 5, 3600, int)
 
         self.data_dir = path_opt("collector", "data_dir", "data")
         self.log_dir = parser.get("collector", "log_dir", fallback="").strip()
         if self.log_dir and not os.path.isabs(self.log_dir):
             self.log_dir = os.path.normpath(os.path.join(base, self.log_dir))
-        self.interval_minutes = parser.getint("collector", "interval_minutes", fallback=60)
+        self.interval_minutes = number("collector", "interval_minutes", 60, 1, 60, int)
         if self.interval_minutes not in INTERVAL_CHOICES:
             LOG.warning("interval_minutes = %s is not one of %s - using 60",
                         self.interval_minutes, ", ".join(str(i) for i in INTERVAL_CHOICES))
             self.interval_minutes = 60
-        window = parser.get("collector", "window_minutes", fallback="").strip()
-        self.window_minutes = max(5, min(60, int(window))) if window else self.interval_minutes
+        window = number("collector", "window_minutes", None, None, None, int)
+        self.window_minutes = max(5, min(60, window)) if window is not None else self.interval_minutes
         self.exclude_vm_pattern = parser.get("collector", "exclude_vm_pattern", fallback="^vCLS-").strip()
-        self.batch_size = max(1, parser.getint("collector", "batch_size", fallback=50))
-        self.retention_months = parser.getint("collector", "retention_months", fallback=13)
+        self.batch_size = number("collector", "batch_size", 50, 1, 1000, int)
+        self.retention_months = number("collector", "retention_months", 13, 0, 1200, int)
         self.compress_old_months = to_bool(parser.get("collector", "compress_old_months", fallback="true"), True)
 
         self.report_dir = path_opt("report", "report_dir", "reports")
-        self.days = max(1, min(400, parser.getint("report", "days", fallback=30)))
+        self.days = max(1, min(400, number("report", "days", 30, None, None, int)))
         self.language = parser.get("report", "language", fallback="en").strip().lower() or "en"
         if self.language not in LANGUAGES:
             LOG.warning("language = %s is not supported (%s) - using en", self.language, ", ".join(LANGUAGES))
             self.language = "en"
-        self.candidate_pct = parser.getfloat("report", "candidate_pct", fallback=40.0)
-        self.threshold_pct = parser.getfloat("report", "threshold_pct", fallback=50.0)
-        self.tier_ratio = parser.getfloat("report", "tier_ratio", fallback=1.0)
-        self.ram_bound_pct = parser.getfloat("report", "ram_bound_pct", fallback=70.0)
-        self.cpu_idle_pct = parser.getfloat("report", "cpu_idle_pct", fallback=50.0)
+        self.candidate_pct = number("report", "candidate_pct", 40.0, *RANGES["candidate_pct"])
+        self.threshold_pct = number("report", "threshold_pct", 50.0, *RANGES["threshold_pct"])
+        self.tier_ratio = number("report", "tier_ratio", 1.0, *RANGES["tier_ratio"])
+        self.ram_bound_pct = number("report", "ram_bound_pct", 70.0, *RANGES["ram_bound_pct"])
+        self.cpu_idle_pct = number("report", "cpu_idle_pct", 50.0, *RANGES["cpu_idle_pct"])
         self.stretched_cluster = to_bool(parser.get("report", "stretched_cluster", fallback="false"), False)
         self.stretched_clusters = [c.strip() for c in parser.get("report", "stretched_clusters", fallback="").split(",") if c.strip()]
-        self.cold_pct = parser.getfloat("report", "cold_pct", fallback=40.0)
-        self.hot_pct = parser.getfloat("report", "hot_pct", fallback=75.0)
+        self.cold_pct = number("report", "cold_pct", 40.0, *RANGES["cold_pct"])
+        self.hot_pct = number("report", "hot_pct", 75.0, *RANGES["hot_pct"])
         self.title = parser.get("report", "title", fallback="VMware Memory Tiering Report").strip()
         self.support_contact = parser.get("report", "support_contact", fallback="https://github.com/steiner-dominik/vmware-memory-report/issues").strip()
         self.template = parser.get("report", "template", fallback="").strip() or None
@@ -661,11 +684,13 @@ class ViJsonClient(object):
         # report "none available" when the counters are simply somewhere else.
         return sorted(n for n in self.counter_lookup() if "tier" in n.lower())
 
-    def query_perf(self, entity_type, counter_map, start, per_instance=()):
+    def query_perf(self, entity_type, counter_map, start, per_instance=(), end=None):
         """Returns {entity_id: {counter_name: [values]}}; splits batches that fault and skips entities that fail alone.
 
         Counters named in per_instance are kept per instance under "name|instance"; every other
         counter keeps only the aggregate, because its per-device rollups say nothing useful here.
+        The window is (start, end]: startTime is exclusive and endTime inclusive, so consecutive
+        runs tile without overlap even when a query runs minutes after the run began.
         """
         perf = self.content["perfManager"]["value"]
         by_id = dict((v, k) for k, v in counter_map.items())
@@ -680,6 +705,9 @@ class ViJsonClient(object):
                 "_typeName": "PerfQuerySpec", "entity": moref(entity_type, eid), "startTime": iso(start),
                 "intervalId": REALTIME_INTERVAL, "format": "normal", "metricId": metric_ids,
             } for eid in ids]
+            if end is not None:
+                for spec in specs:
+                    spec["endTime"] = iso(end)
             try:
                 answer = self.invoke("PerformanceManager", perf, "QueryPerf", {"querySpec": specs}) or []
             except MemTierError as exc:
@@ -709,8 +737,8 @@ class ViJsonClient(object):
         return results, failed, run
 
 
-def perf_batches(client, entity_type, ids, counter_map, start, batch_size, per_instance=()):
-    results, failed, run = client.query_perf(entity_type, counter_map, start, per_instance)
+def perf_batches(client, entity_type, ids, counter_map, start, batch_size, per_instance=(), end=None):
+    results, failed, run = client.query_perf(entity_type, counter_map, start, per_instance, end)
     for i in range(0, len(ids), batch_size):
         run(ids[i:i + batch_size])
     return results, failed
@@ -919,9 +947,12 @@ def collect_vcenter(cfg, server, now):
                      server, ", ".join(HOST_TIER_COUNTERS))
         host_counters = dict(host_counters, **cpu_counters)
         host_counters.update(tier_perf)
+        # The window ends at the run's own timestamp: a query that runs late (large inventories, or
+        # a second vCenter after a slow first one) must not reach into the next run's window.
         host_stats, host_failed = perf_batches(client, "HostSystem", live_hosts, host_counters, start,
-                                               cfg.batch_size, per_instance=tier_perf.keys())
-        vm_stats, vm_failed = perf_batches(client, "VirtualMachine", sorted(vm_meta), vm_counters, start, cfg.batch_size)
+                                               cfg.batch_size, per_instance=tier_perf.keys(), end=now)
+        vm_stats, vm_failed = perf_batches(client, "VirtualMachine", sorted(vm_meta), vm_counters, start,
+                                           cfg.batch_size, end=now)
 
         hosts_without = 0
         for mid in sorted(host_meta, key=lambda k: (host_meta[k]["cluster"], host_meta[k]["name"])):
@@ -1216,7 +1247,7 @@ def find_template(cfg):
 
 
 def cmd_report(cfg, args):
-    days = args.days or cfg.days
+    days = max(1, min(400, args.days)) if args.days else cfg.days
     if args.stretched_cluster:
         cfg.stretched_cluster = True
     if args.stretched_clusters:
@@ -1224,8 +1255,12 @@ def cmd_report(cfg, args):
     for name in ("threshold_pct", "candidate_pct", "tier_ratio", "ram_bound_pct", "cpu_idle_pct",
                  "cold_pct", "hot_pct", "language", "title", "support_contact", "template"):
         value = getattr(args, name, None)
-        if value is not None:
-            setattr(cfg, name, value)
+        if value is None:
+            continue
+        if name in RANGES and not RANGES[name][0] <= value <= RANGES[name][1]:
+            raise MemTierError("--%s must be between %s and %s, got %s"
+                               % (name.replace("_", "-"), RANGES[name][0], RANGES[name][1], value))
+        setattr(cfg, name, value)
     write_report(cfg, days, args.output)
     return 0
 
@@ -1241,8 +1276,9 @@ def write_report(cfg, days, output=None):
 
     target = os.path.abspath(output or os.path.join(cfg.report_dir, REPORT_NAME))
     ensure_dir(os.path.dirname(target))
-    # Write aside and swap in, so a reader never sees a half-written report
-    tmp = "%s.%d.tmp" % (target, os.getpid())
+    # Write aside and swap in, so a reader never sees a half-written report. The name is unique per
+    # thread: the container may rebuild the report while a collection writes it too.
+    tmp = "%s.%d.%d.tmp" % (target, os.getpid(), threading.get_ident())
     with io.open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(html)
     os.replace(tmp, target)

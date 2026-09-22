@@ -4,6 +4,52 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.09.09
+
+Verdicts that agree with themselves.
+
+- **Usable extra memory keeps the hot set within the limit.** Extra memory is filled by more of
+  the same workload, so the hot set grows with it. The retrofit figure is now also capped at what
+  keeps active P95 at or below 50% of DRAM, next to the CPU cap. On the README example the
+  promise drops from 336 GB, which would have pushed the hot set to 202 GB of 384 GB DRAM, to
+  303 GB.
+- **Standalone hosts are sized.** A host outside any cluster is its own group of one. Before, a
+  fleet of standalone hosts showed *No workload* and "too much of the memory is hot" for new
+  servers next to a *Strong candidate* verdict.
+- **The New servers badge follows the clusters that have a saving.** One large hot cluster no
+  longer turns a real saving on the other clusters into *Little to gain*, and the
+  *Active P95 ÷ assigned* figure beside it now covers the same clusters as the headline.
+- **A saving of nothing is not a *Full saving*.** Heavily overcommitted hosts that already have no
+  more DRAM than assigned ÷ (1 + ratio) are *Little to gain*, with the measured best case named.
+- The "same figure" note no longer credits the hot set when DIMM rounding is what makes the
+  conservative and measured sizing meet; *No workload* and *No data* get their own text.
+- Memory used is measured against the DRAM and NVMe tier each host had in each interval, so a
+  host that got its tier mid-range is not read as tiered all along.
+- The snapshot reports active ÷ consumed as average over average, the same metric as the trend
+  report (it divided active P95 by average consumed, which read systematically hotter).
+
+### Fixes
+
+- Performance queries end at the run's timestamp. A query that ran late (large inventories, or a
+  second vCenter after a slow first one) reached into the next run's window, and those samples
+  were counted twice.
+- The container could corrupt the report when a rebuild at startup and a collection wrote it at
+  the same time: both used the same temporary file.
+- Home Assistant: `sensor.*_cold_in_dram` and `sensor.*_active_of_consumed` showed *unknown*
+  instead of 0.
+- PowerShell: the collector and the installer pass `RamBoundPct` and `CpuIdlePct` (and the
+  installer `TierRatio`, `ColdPct`, `HotPct`) to the report; before, every scheduled run rebuilt it
+  with the defaults. `Days` is limited to 400 as in the Python edition and the app.
+- PowerShell: the per-tier counter recognises the DRAM tier by the name the host reports, as the
+  Python edition does, and CSV numbers round half up in both editions.
+- Python: an invalid or out-of-range number in `memtier.ini` (e.g. `threshold_pct = 0`, which
+  divided by zero in the sizing) warns and falls back to the default instead of breaking the
+  report; command-line thresholds are checked against the same ranges.
+- `env.example` lists `MEMTIER_RAM_BOUND_PCT` and `MEMTIER_CPU_IDLE_PCT`.
+- The Retrofit column of *Clusters: the three questions* sorts.
+- A single-host group reads "1 host", not "1 hosts".
+- New screenshots of the mock reports; the failover screenshot showed a section removed in 26.09.08.
+
 ## 26.09.08
 
 Two buying decisions, three views.
