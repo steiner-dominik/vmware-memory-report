@@ -10,10 +10,11 @@ const html = fs.readFileSync(file, "utf8");
 const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 if (blocks.length < 2) { console.error("expected two inline scripts"); process.exit(2); }
 
-const advCount = (html.match(/data-adv/g) || []).length;
+const advCount = (html.match(/data-adv\b/g) || []).length;
+const stdCount = (html.match(/data-std\b/g) || []).length;
 const ids = [...html.matchAll(/\bid="([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
-const { registry, advNodes } = install({
-  advCount, ids,
+const { registry, advNodes, stdNodes } = install({
+  advCount, stdCount, ids,
   store: { "memtier.mode": mode, "memtier.tierPct": tier, "memtier.lang": lang },
 });
 
@@ -29,6 +30,15 @@ console.log(JSON.stringify({
   ids: ids.length,
   advTotal: advNodes.length,
   advHidden: advNodes.filter((n) => n.hidden).length,
+  stdTotal: stdNodes.length,
+  stdHidden: stdNodes.filter((n) => n.hidden).length,
+  cases: (registry.cases ? registry.cases.children : []).map(text),
+  funnel: text(registry.funnel || null),
+  confidence: text(registry.confidence || null),
+  decision: registry.decisionTable ? rows(registry.decisionTable) : [],
+  hostTable: registry.hostTable ? rows(registry.hostTable) : [],
+  quality: (registry.quality ? registry.quality.children : []).map(text),
+  subtitle: text(registry.subtitle || null),
   verdict: text(registry.verdict || null),
   verdictHidden: !!(registry.verdict && registry.verdict.hidden),
   kpis: (registry.kpis ? registry.kpis.children : []).map(text),

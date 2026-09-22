@@ -137,8 +137,8 @@ threshold_pct = 50
 # NVMe tier size relative to DRAM used for sizing (1.0 = the supported 1:1 maximum)
 tier_ratio = 1.0
 # A host is "out of memory but not out of CPU" when consumed memory is at or above
-# ram_bound_pct of its DRAM while CPU stays at or below cpu_idle_pct. Those hosts gain
-# capacity from an NVMe tier instead of from another socket.
+# ram_bound_pct of its DRAM while sustained CPU (P95 of the interval averages) stays at or
+# below cpu_idle_pct. Those hosts gain capacity from an NVMe tier instead of from another socket.
 ram_bound_pct = 70
 cpu_idle_pct = 50
 # Stretched clusters (two sites): capacity after a failure is 50% of the cluster instead of N+1.

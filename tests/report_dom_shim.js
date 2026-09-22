@@ -32,6 +32,8 @@ function install(opts) {
   const registry = {};
   const advNodes = [];
   for (let i = 0; i < (opts.advCount || 0); i++) advNodes.push(mkNode("section"));
+  const stdNodes = [];
+  for (let i = 0; i < (opts.stdCount || 0); i++) stdNodes.push(mkNode("section"));
   // Only ids the page really declares exist. A shim that invents nodes on demand hides the
   // exact bug this harness is for: JavaScript still reaching for an element that was removed
   // from the markup. The browser returns null there and the next property access throws.
@@ -47,7 +49,7 @@ function install(opts) {
     createElement: mkNode,
     createElementNS: (ns, tag) => mkNode(tag),
     createTextNode: (txt) => ({ nodeType: 3, textContent: String(txt) }),
-    querySelectorAll: (sel) => (sel === "[data-adv]" ? advNodes : []),
+    querySelectorAll: (sel) => (sel === "[data-adv]" ? advNodes : sel === "[data-std]" ? stdNodes : []),
     addEventListener() {},
   };
   global.window = { innerWidth: 1400, innerHeight: 900, addEventListener() {}, MEMTIER: null };
@@ -57,7 +59,7 @@ function install(opts) {
   global.URL = { createObjectURL: () => "blob:", revokeObjectURL() {} };
   global.setTimeout = () => 0;
   global.clearTimeout = () => {};
-  return { registry, advNodes };
+  return { registry, advNodes, stdNodes };
 }
 
 module.exports = { install, mkNode };

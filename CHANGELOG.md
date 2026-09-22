@@ -4,6 +4,49 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.09.08
+
+Two buying decisions, three views.
+
+- **Three views: Summary, Simple, Expert.** *Summary* is the page for the customer: the
+  verdict, the two buying decisions and where the memory goes. *Simple* (the default) is the
+  decision board. *Expert* replaces "Everything" and adds a data-quality panel.
+- **One verdict per buying decision.** *New servers* (less DRAM plus an NVMe tier) and
+  *Existing hosts* (add an NVMe tier) each get their own verdict, headline number and the
+  two figures that decide it. Before, one "strong candidate" had to answer both.
+- **Half-DRAM test: active P95 ÷ assigned.** At or below 50% ÷ (1 + tier ratio) - 25% at
+  1:1 - DRAM can shrink to assigned ÷ (1 + ratio) and still hold the hot set (*Full
+  saving*); above it the hot set sets the DRAM (*Partial saving*).
+- **The DRAM saving is conservative.** It is sized for `max(assigned P95, consumed peak)`,
+  so it still holds once consumed memory has grown into what the VMs are assigned - which it
+  keeps doing for weeks, because ESXi does not reclaim touched memory without pressure. The
+  measured figure (consumed only, the previous headline) is shown next to it.
+- **Hosts that already run a tier are left out of the new-server saving.** They have made
+  their DRAM saving; counting them again promised it twice.
+- **Extra memory is gated by CPU.** The retrofit case uses sustained CPU - the P95 of the
+  per-interval averages - instead of the P95 of the per-interval peaks, which one busy day
+  could push over the line. "Usable extra memory" counts only hosts whose memory is full
+  while their CPU idles, capped at what that CPU can run up to 80% sustained. The old "Extra
+  memory" figure is kept as "Extra on paper" in the Expert view.
+- **New sections:** *Where the memory goes* (assigned, consumed, active against DRAM, with
+  days collected and whether consumed is still rising), *Clusters: the three questions*,
+  *Which runs out first: memory or CPU?* (every host by memory used and sustained CPU) and
+  *Data quality*.
+- **Clusters are ranked by cold memory**, not by ratio. A cluster with no powered-on VM is
+  listed last as *No workload* instead of first as *Strong candidate*.
+- The host table is grouped by the question each column answers.
+
+### Fixes
+
+- The report header showed "Support:" with nothing after it.
+- The host table showed the raw vSphere value (`noTiering`, `softwareTiering`) as the
+  tiering type.
+- VMs reporting more active than consumed memory (vSphere Pods do) are marked *Unclear* and
+  left out of the Cold / Warm / Hot counts instead of filling the "Hot" list.
+
+No collector or CSV change: the report payload stays schema 4, and reports from older data
+render with the new views.
+
 ## 26.09.07
 
 Memory tier usage is readable after all - from vSphere 9.

@@ -238,7 +238,9 @@ class RenderTest(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp()
         data = os.path.join(cls.tmp, "data")
         os.makedirs(data)
-        # Two hosts that already run a tier, with a very cold working set.
+        # Cluster "C": two hosts that already run a tier, with a very cold working set.
+        # Cluster "D": two hosts without a tier, memory full and CPU idle - a retrofit case, and
+        # the only hosts a smaller DRAM purchase can still save on.
         now = _dt.datetime(2026, 9, 15, 12, 5, 0)
         rows, runs = [], []
         for quarter in range(8):
@@ -250,14 +252,23 @@ class RenderTest(unittest.TestCase):
                     "ConnectionState": "connected", "MaintenanceMode": "false", "TieringType": "softwareTiering",
                     "PhysicalMB": 196608, "DramMB": 98304, "NvmeTierMB": 98304, "VMsOn": 10, "AssignedMB": 90000,
                     "Samples": 45, "ActiveAvgMB": 7700, "ActiveP95MB": 8316, "ActiveMaxMB": 9240,
-                    "ConsumedAvgMB": 76000, "ConsumedMaxMB": 77520, "BalloonMaxMB": 0, "SwapUsedMaxMB": 0})
-            runs.append({"Timestamp": mt.iso(ts), "VCenter": "vc", "Status": "ok", "Hosts": 2, "HostsConnected": 2,
-                         "VMsTotal": 24, "VMsOn": 20, "VMsOff": 4, "VMsSuspended": 0, "Templates": 2,
+                    "ConsumedAvgMB": 76000, "ConsumedMaxMB": 77520, "BalloonMaxMB": 0, "SwapUsedMaxMB": 0,
+                    "CpuCores": 16, "CpuThreads": 32, "CpuMhz": 2600, "CpuAvgPct": 30, "CpuP95Pct": 40, "CpuMaxPct": 50})
+                rows.append({
+                    "Timestamp": mt.iso(ts), "WindowStart": mt.iso(ts - _dt.timedelta(minutes=15)),
+                    "VCenter": "vc", "Cluster": "D", "VMHost": "esx-d%d" % n, "HostId": "d%d" % n,
+                    "ConnectionState": "connected", "MaintenanceMode": "false", "TieringType": "noTiering",
+                    "PhysicalMB": 98304, "DramMB": 98304, "NvmeTierMB": 0, "VMsOn": 10, "AssignedMB": 90000,
+                    "Samples": 45, "ActiveAvgMB": 7000, "ActiveP95MB": 7560, "ActiveMaxMB": 8400,
+                    "ConsumedAvgMB": 69091, "ConsumedMaxMB": 70473, "BalloonMaxMB": 0, "SwapUsedMaxMB": 0,
+                    "CpuCores": 16, "CpuThreads": 32, "CpuMhz": 2600, "CpuAvgPct": 20, "CpuP95Pct": 45, "CpuMaxPct": 60})
+            runs.append({"Timestamp": mt.iso(ts), "VCenter": "vc", "Status": "ok", "Hosts": 4, "HostsConnected": 4,
+                         "VMsTotal": 44, "VMsOn": 40, "VMsOff": 4, "VMsSuspended": 0, "Templates": 2,
                          "VMsExcluded": 0, "VMsWithoutStats": 0, "HostsWithoutStats": 0, "DurationSec": 4, "Message": ""})
         mt.append_csv(os.path.join(data, "host-2026-09.csv"), mt.HOST_FIELDS, rows)
         mt.append_csv(os.path.join(data, "run-2026-09.csv"), mt.RUN_FIELDS, runs)
         cls.report = os.path.join(cls.tmp, "report.html")
-        cfg = config(cls.tmp)
+        cfg = config(cls.tmp, support_contact="https://example.com/help")
         with io.open(TEMPLATE, encoding="utf-8") as handle:
             template = handle.read()
         payload = mt.script_safe_json(mt.build_report_data(cfg, now, 30, "test"))
@@ -277,22 +288,60 @@ class RenderTest(unittest.TestCase):
         return json.loads(out.stdout)
 
     def test_every_mode_language_and_ratio_renders(self):
-        for mode in ("simple", "expert"):
+        for mode in ("summary", "simple", "expert"):
             for tier in ("50", "100", "200", "400"):
                 for lang in ("en", "de"):
                     r = self.render(mode, tier, lang)
-                    self.assertTrue(r["kpis"], "no figures for %s/%s/%s" % (mode, tier, lang))
-                    joined = " ".join(r["kpis"]) + r["verdict"]
-                    for bad in ("NaN", "undefined", "[object"):
+                    self.assertEqual(len(r["cases"]), 2, "no cases for %s/%s/%s" % (mode, tier, lang))
+                    joined = " ".join(r["kpis"] + r["cases"]) + r["verdict"] + r["funnel"] + r["confidence"]
+                    joined += " ".join(" ".join(row) for row in r["decision"] + r["hostTable"] + r["sizing"])
+                    for bad in ("NaN", "undefined", "[object", "Infinity"):
                         self.assertNotIn(bad, joined, "%s in %s/%s/%s" % (bad, mode, tier, lang))
 
-    def test_simple_mode_hides_the_detail(self):
-        simple, expert = self.render("simple"), self.render("expert")
+    def test_three_views(self):
+        summary, simple, expert = self.render("summary"), self.render("simple"), self.render("expert")
         self.assertGreater(simple["advTotal"], 0)
+        self.assertGreater(simple["stdTotal"], 0)
+        # Summary: the verdict, the two cases and where the memory goes - nothing else.
+        self.assertEqual(summary["stdHidden"], summary["stdTotal"])
+        self.assertEqual(summary["advHidden"], summary["advTotal"])
+        self.assertEqual(summary["decision"], [])
+        # Simple: the decision board, without the expert detail.
+        self.assertEqual(simple["stdHidden"], 0)
         self.assertEqual(simple["advHidden"], simple["advTotal"])
+        self.assertTrue(simple["decision"])
         self.assertEqual(expert["advHidden"], 0)
+        self.assertEqual(expert["stdHidden"], 0)
         self.assertLess(len(simple["kpis"]), len(expert["kpis"]))
         self.assertLess(len(simple["sizing"][0]), len(expert["sizing"][0]))
+        self.assertTrue(expert["quality"])
+
+    def test_tiered_hosts_are_left_out_of_the_new_server_saving(self):
+        r = self.render("simple")
+        new = re.sub(r"\s+", " ", r["cases"][0])
+        self.assertIn("Full saving", new)
+        self.assertIn("2 host(s) already run an NVMe tier", new)
+        verdicts = {row[0].split(" ")[0]: row for row in r["decision"][1:]}
+        self.assertIn("Already tiered", " ".join(verdicts["C"]))
+        self.assertIn("Full saving", " ".join(verdicts["D"]))
+        sized = {row[0]: row for row in r["sizing"][1:]}
+        self.assertEqual(sized["C"][1], "0 / 2")
+        self.assertEqual(sized["D"][1], "2 / 2")
+
+    def test_retrofit_needs_memory_full_and_idle_cpu(self):
+        r = self.render("simple")
+        retro = re.sub(r"\s+", " ", r["cases"][1])
+        self.assertIn("Tier instead of a host", retro)
+        # the tiered hosts are not retrofit candidates and not counted
+        self.assertIn("2 of 2 hosts", retro)
+
+    def test_support_contact_is_shown(self):
+        self.assertIn("Support: https://example.com/help", self.render("simple")["subtitle"])
+
+    def test_tiering_type_is_translated(self):
+        cells = " ".join(" ".join(row) for row in self.render("expert")["hostTable"])
+        self.assertNotIn("noTiering", cells)
+        self.assertNotIn("softwareTiering", cells)
 
     def test_no_javascript_reaches_for_a_removed_element(self):
         """Every $("id") must exist in the markup.
@@ -318,11 +367,11 @@ class RenderTest(unittest.TestCase):
 
     def test_a_bigger_tier_only_moves_the_sizing(self):
         def figures(tier):
-            """The one data row, keyed by its full column heading."""
+            """The row of the untiered cluster, keyed by its full column heading."""
             rows = self.render("simple", tier)["sizing"]
-            self.assertEqual(len(rows), 2, "expected one cluster row")
+            row = [r for r in rows[1:] if r[0] == "D"][0]
             out = {}
-            for head, cell in zip(rows[0][1:], rows[1][1:]):
+            for head, cell in zip(rows[0][1:], row[1:]):
                 try:
                     out[head] = float(cell.replace(",", ""))
                 except ValueError:
@@ -330,12 +379,12 @@ class RenderTest(unittest.TestCase):
             return out
         small, big = figures("50"), figures("400")
         needed = [k for k in small if k.startswith("DRAM needed")][0]
-        saved = [k for k in small if k.startswith("DRAM saved")][0]
-        extra = [k for k in small if k.startswith("Extra")][0]
+        saved = [k for k in small if k.startswith("DRAM saved") and "measured" not in k][0]
+        usable = [k for k in small if k.startswith("Usable")][0]
         # A bigger tier backs more memory per GB of DRAM: less DRAM needed, more saved, more capacity.
         self.assertLess(big[needed], small[needed])
         self.assertGreater(big[saved], small[saved])
-        self.assertGreater(big[extra], small[extra])
+        self.assertGreater(big[usable], small[usable])
 
     def test_the_verdict_does_not_depend_on_the_tier_size(self):
         """Active over consumed memory is the decision, and no ratio can change it."""

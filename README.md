@@ -32,8 +32,8 @@ The two cases where that pays off:
 
 | | Question | What the report gives you |
 |---|---|---|
-| 🛒 **Buying new hardware** | How little DRAM do I need? | `DRAM needed`, `DRAM saved` per cluster |
-| 🧱 **Extending what you own** | CPU is fine, RAM is full — how much more fits? | `Capacity with a tier`, `Extra memory` per cluster |
+| 🛒 **Buying new hardware** | Can I buy half the DRAM plus an NVMe tier? | *New servers* verdict, `DRAM saved` (conservative and measured) per cluster |
+| 🧱 **Extending what you own** | CPU is fine, RAM is full — how much more fits? | *Retrofit* verdict, `Usable extra memory` per cluster, capped by CPU |
 
 ## 🔍 But will it work for *your* clusters?
 
@@ -58,7 +58,7 @@ A single look at vCenter won't tell you. Active memory swings with backups, batc
 * 🧰 **Two editions, same result:** PowerShell (PowerCLI) or Python (no extra packages). Both write the same CSV files and build the same report.
 * 🏠 **Easy install for the homelab:** a Home Assistant app or a Docker container runs the Python edition on schedule and serves the report, no cron or scheduled task needed.
 * 🌍 **English and German**, switchable in the report and in the panel.
-* 🎚️ **Simple by default:** one verdict, four numbers. Switch to *Everything* when you want the charts, the heatmap and the per-VM tables.
+* 🎚️ **Three views:** *Summary* for the customer (two verdicts, one picture), *Simple* for the decision board, *Expert* for every chart, table and data-quality check.
 * 🧪 **Simulate the tier size:** 50%, 100% (1:1), 200% or 400% of DRAM, and watch the sizing move.
 * ⚡ **Quick snapshot:** want a first impression right now? The snapshot script looks at the last hour, no scheduling needed.
 
@@ -167,10 +167,14 @@ The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmwa
 
 ## 📖 Reading the report
 
-* **Memory tiering candidates:** every cluster ranked by active vs. consumed memory, best first.
+* **Two verdicts, one per buying decision:** *New servers* (less DRAM plus an NVMe tier) and *Existing hosts* (add an NVMe tier). Each has its headline number and the two figures that decide it.
+* **Where the memory goes:** assigned, consumed and active memory against DRAM in one picture, with how many days are collected and whether consumed memory is still rising.
+* **Clusters: the three questions:** active ÷ consumed, active P95 ÷ assigned and memory used • CPU per cluster, with both verdicts. Ranked by cold memory, clusters without a powered-on VM last.
+* **Which runs out first:** every host by memory used and sustained CPU. Lower right is "add a tier", upper left is "CPU-bound".
+* **Memory tiering candidates:** every cluster by active vs. consumed memory, most cold memory first.
   * *Strong candidate* ≤ 20% · *Candidate* ≤ 40% · *Limited benefit* ≤ 60% · *Little benefit* above that
   * A second badge says whether the hot set still fits today's DRAM (*Hot set fits DRAM* / *DRAM-bound today*). That one only limits tiering on hosts you already own.
-* **Sizing:** `DRAM needed`, `DRAM saved`, `Capacity with a tier` and `Extra memory` per cluster — the two buying decisions, with numbers.
+* **Sizing:** `DRAM needed`, `DRAM saved` (conservative, and measured), `Usable extra memory` per cluster — the two buying decisions, with numbers.
 * **Host charts:** active and consumed memory per host over time, with the 50% feasibility line.
 * **Hot set after a failure:** does the working set still fit the DRAM that survives a host or site failure? A cluster sized right at the limit fails that test, and the failure mode is the tier serving hot pages while the cluster is already degraded.
 * **Weekday × hour heatmap:** when the working set is hottest — active as a share of *consumed*, so it shows when a tier is under the most pressure rather than when the hosts are merely busy.
@@ -178,12 +182,40 @@ The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmwa
 * **Collector runs:** gaps and failed runs are visible, nothing fails silently.
 * **Language:** English and German, switchable in the report itself (the choice is remembered per browser).
 
-### Simple or everything
+### Summary, simple or expert
 
-The report opens in **Simple** view: a one-line verdict, four figures and the two tables that answer
-"should we tier, and what do we get". Switch to **Everything** for the host and cluster charts,
-failover headroom, the weekday × hour heatmap and the per-host and per-VM tables. The choice is
-remembered per browser.
+* **Summary** is the page for the customer or the budget owner: the verdict, the two buying
+  decisions and where the memory goes. Nothing to configure.
+* **Simple** (the default) adds the decision board: the three questions per cluster, which runs
+  out first per host, the candidate bars and the sizing table.
+* **Expert** adds everything an infrastructure engineer wants to check before an order: host
+  and cluster charts, the weekday × hour heatmap, the host table grouped by the question each
+  column answers, per-VM tables, collector runs and a data-quality panel.
+
+The choice is remembered per browser.
+
+### New servers: can I buy half the DRAM?
+
+Active memory over **assigned** memory answers it. Buy DRAM for assigned ÷ (1 + tier ratio) and an
+NVMe tier of the rest, and the hot set has to stay under 50% of that smaller DRAM, i.e. under
+50% ÷ (1 + tier ratio) of assigned memory — **25% with the 1:1 default**. At or below that line a
+cluster gets *Full saving*: the tier alone sets the DRAM. Above it the hot set does, and the saving
+is *Partial*.
+
+The headline is **conservative**: it sizes for `max(assigned P95, consumed peak)`, so it still
+holds once consumed memory has grown into what the VMs are assigned (ESXi does not take back
+memory a guest has touched unless the host is under pressure, so consumed keeps creeping up for
+weeks). The **measured** figure, sized on consumed memory alone, is shown next to it as the best
+case. Hosts that **already run an NVMe tier** are left out: they have made their DRAM saving.
+
+### Existing hosts: does a tier add usable capacity?
+
+Only where memory is the bottleneck and the CPU is not: consumed P95 at or above `ram_bound_pct`
+of DRAM (70%) while **sustained CPU** stays at or below `cpu_idle_pct` (50%). Sustained CPU is the
+P95 of the per-interval averages; the P95 of the per-interval peaks is dominated by the busiest
+minutes and is shown next to it for context only. The extra memory is capped at what the CPU can
+run up to 80% sustained — capacity nobody can run VMs in is capacity on paper only, and the report
+shows that figure separately.
 
 ### Simulating the tier size
 
@@ -207,12 +239,10 @@ more, smaller modules over fewer, larger ones at the same total.
 
 Host CPU is collected alongside memory for one reason: a host whose memory is full while its CPUs
 idle does not need another host, it needs more memory — which is exactly what a tier gives it.
-A host counts when consumed memory reaches `ram_bound_pct` of DRAM (default 70%) *and* CPU P95
-stays at or below `cpu_idle_pct` (default 50%). A host that is short of both is not flagged: that
-one really does need another host.
+A host that is short of both is not flagged: that one really does need another host.
 
 `cpu.usage.average` is optional — a vCenter that does not publish it still produces the full
-memory report.
+memory report, and the retrofit verdict says it cannot be judged.
 
 ### What about failover?
 
@@ -252,21 +282,35 @@ ONE HOST, ONE COLLECTION INTERVAL
 
 BUYING NEW HARDWARE                      the same workload, sized with a 1:1 tier
 
-  DRAM 384 GB                            DRAM 202 GB   +   NVMe 202 GB
+  DRAM 384 GB                            DRAM 256 GB   +   NVMe 256 GB
   +-----------------------------+        +--------------+--------------+
   |active|        cold          |        |active| cold  |     cold     |
   +-----------------------------+        +--------------+--------------+
-  336 GB of memory, all in DRAM          hot set 101 GB <= 50 % of 202 GB DRAM: fits
+  336 GB of memory, all in DRAM          hot set 101 GB <= 50 % of 256 GB DRAM: fits
 
-    DRAM needed = max( active P95 / 50 % , consumed peak / (1 + 1) )
-                = max( 101 / 0.5 , 336 / 2 ) = max( 202 , 168 ) = 202 GB
-    DRAM saved  = 384 - 202 = 182 GB
+    conservative (headline): every VM may grow into all of its assigned memory
+    DRAM needed = max( active P95 / 50 % , max(assigned P95, consumed peak) / (1 + 1) )
+                = max( 101 / 0.5 , max(512, 336) / 2 ) = max( 202 , 256 ) = 256 GB
+    DRAM saved  = 384 - 256 = 128 GB
+
+    measured (best case): consumed stays where it is today
+    DRAM needed = max( 202 , 336 / 2 ) = 202 GB   ->   DRAM saved = 182 GB
+
+    active P95 / assigned = 101 / 512 = 20 %  <=  50 % / (1 + 1) = 25 %
+    -> the tier alone sets the DRAM: assigned / 2 still holds the hot set (full saving)
+
+    Hosts that already run a tier are left out: their DRAM saving is already made.
 
 
 EXTENDING HOSTS YOU ALREADY OWN          no new DRAM, add NVMe instead
 
+    only where memory is the bottleneck and the CPU is not:
+      consumed P95 >= 70 % of DRAM  and  sustained CPU (P95 of interval averages) <= 50 %
+
     capacity with a 1:1 tier = DRAM x (1 + 1) = 384 x 2 = 768 GB
-    extra memory             = 768 - 336 (consumed peak) = 432 GB
+    extra on paper           = 768 - 336 (consumed peak) = 432 GB
+    usable extra memory      = min( extra on paper , consumed x (80 % / CPU - 1) )
+                               at 40 % CPU: min( 432 , 336 x (80 / 40 - 1) ) = 336 GB
     valid while active P95 stays at or below 50 % of the 384 GB DRAM
 
 
