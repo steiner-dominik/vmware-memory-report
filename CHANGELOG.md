@@ -4,6 +4,18 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.10.01
+
+The decision metric over time, per cluster.
+
+- **Active ÷ consumed over time, per cluster.** A chart per cluster in *Simple* and *Expert*,
+  right below the candidate bars and in the same order: active over consumed memory per
+  interval, summed over the cluster's hosts, with the candidate line at 40%. A vMotion moves
+  memory between two hosts of one cluster, so it shows on both host charts but cancels out here:
+  this is the line to judge a cluster by. The tooltip gives the sizes behind the ratio, the cold
+  memory in DRAM and how many hosts had data in that interval.
+- The host charts stay in *Expert*: a host that was added or replaced shows there.
+
 ## 26.09.09
 
 Verdicts that agree with themselves.

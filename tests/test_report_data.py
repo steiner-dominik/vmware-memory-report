@@ -528,6 +528,29 @@ class VerdictLogicTest(unittest.TestCase):
         self.assertIn("no more DRAM than they would need", r["new"])
         self.assertNotIn("Full saving", r["new"])
 
+    def test_a_vmotion_does_not_move_the_cluster_line(self):
+        # Half way through, the workload moves from one host to the other: both host ratios jump,
+        # the cluster's active / consumed stays at 20% and its chart is a flat line.
+        a, b = self.host("a", "V", 512, 300, 40, 200, 20), self.host("b", "V", 512, 300, 10, 50, 20)
+        half = len(a["s"]) // 2
+        for ra, rb in zip(a["s"][half:], b["s"][half:]):
+            for col in (3, 4, 5, 6, 10):
+                ra[col], rb[col] = rb[col], ra[col]
+        r = self.render("vmotion", [a, b])
+        self.assertEqual(len(r["clusterTrend"]), 1)
+        self.assertIn("Active / consumed 20.0%", r["clusterTrend"][0]["title"])
+        ys = {pt.split(",")[1] for pt in re.split(r"[ML]", r["clusterTrend"][0]["line"]) if pt}
+        self.assertEqual(len(ys), 1, "the cluster line moved with the vMotion: %s" % sorted(ys))
+
+    def test_cluster_charts_are_part_of_the_decision_board(self):
+        hosts = [self.host("h%d" % i, "Hot", 1024, 1200, 500, 700, 30) for i in range(2)]
+        hosts += [self.host("c%d" % i, "Cold", 512, 800, 40, 400, 30) for i in range(2)]
+        simple = self.render("boards", hosts)
+        # same order as the candidate bars: most cold memory first
+        self.assertEqual([c["title"].split(" ")[0] for c in simple["clusterTrend"]], ["Cold", "Hot"])
+        self.assertTrue(all(c["line"] for c in simple["clusterTrend"]))
+        self.assertEqual(self.render("boards", hosts, "summary")["clusterTrend"], [])
+
     def test_same_figure_after_dimm_rounding_is_not_blamed_on_the_hot_set(self):
         r = self.render("rounded", [self.host("r1", "R", 384, 512, 101, 336, 40)])
         self.assertIn("rounds up to the same buildable DIMM population", r["new"])

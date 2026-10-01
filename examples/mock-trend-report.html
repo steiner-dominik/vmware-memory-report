@@ -297,6 +297,16 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     </section>
 
     <section class="card" data-std>
+      <h2 data-i18n="secClusterTrend">Active ÷ consumed over time, per cluster</h2>
+      <p class="hint" id="clusterTrendHint"></p>
+      <div class="legend">
+        <span><i class="key-line"></i><span data-i18n="lgActCons">Active ÷ consumed, per interval</span></span>
+        <span><i class="key-thr"></i><span id="lgCand"></span></span>
+      </div>
+      <div class="panels" id="clusterPanels"></div>
+    </section>
+
+    <section class="card" data-std>
       <h2 data-i18n="secSizing">Sizing: what memory tiering would buy you</h2>
       <p class="hint" id="sizingHint"></p>
       <div class="tablewrap"><table id="sizingTable"></table></div>
@@ -570,6 +580,12 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
         "\"Hot set fits DRAM\" is a separate question and only limits tiering on the hardware you already own; " +
         "clusters above the {4}% limit today: {3}.",
       candEmpty: "No cluster data in the selected range.",
+      secClusterTrend: "Active ÷ consumed over time, per cluster",
+      clusterTrendHint: "Active ÷ consumed memory per interval, summed over each cluster's hosts: the decision metric as it " +
+        "developed. A VM moving between hosts of the same cluster cancels out here, so this is the line to judge a cluster by; " +
+        "Expert adds a chart per host, where a host that was added or replaced shows. At or below the dashed {0}% line the " +
+        "cluster is a candidate. Same order as above. Hover or focus a chart and use ← → for exact values.",
+      lgActCons: "Active ÷ consumed, per interval", lgCand: "Candidate (≤ {0}%)", ttActiveAvg: "Active (average)",
       vStrong: "Strong candidate", vCandidate: "Candidate", vLimited: "Limited benefit", vLittle: "Little benefit", vNoData: "No data",
       fitsDram: "Hot set fits DRAM", dramBound: "DRAM-bound today",
       lgActiveP95: "Active (P95)", lgConsumedP95: "Consumed (P95)", lgConfigured: "Configured (assigned to powered-on VMs)",
@@ -831,6 +847,13 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
         "„Heißer Anteil passt ins DRAM“ ist eine eigene Frage und begrenzt Tiering nur auf bereits vorhandener Hardware; " +
         "heute über der Grenze von {4} %: {3} Cluster.",
       candEmpty: "Keine Cluster-Daten im gewählten Zeitraum.",
+      secClusterTrend: "Aktiv ÷ belegt im Zeitverlauf, je Cluster",
+      clusterTrendHint: "Aktiver ÷ belegter Speicher je Intervall, summiert über die Hosts eines Clusters: die " +
+        "Entscheidungsgröße im Verlauf. Eine VM, die zwischen Hosts desselben Clusters wandert, hebt sich hier auf - nach " +
+        "dieser Linie wird ein Cluster beurteilt; Experte zeigt zusätzlich ein Diagramm je Host, in dem ein hinzugefügter " +
+        "oder ersetzter Host sichtbar wird. Auf oder unter der gestrichelten Linie bei {0} % ist der Cluster ein Kandidat. " +
+        "Reihenfolge wie oben. Für genaue Werte in ein Diagramm fahren oder es fokussieren und ← → benutzen.",
+      lgActCons: "Aktiv ÷ belegt, je Intervall", lgCand: "Kandidat (≤ {0} %)", ttActiveAvg: "Aktiv (Durchschnitt)",
       vStrong: "Starker Kandidat", vCandidate: "Kandidat", vLimited: "Begrenzter Nutzen", vLittle: "Kaum Nutzen", vNoData: "Keine Daten",
       fitsDram: "Heißer Anteil passt ins DRAM", dramBound: "Heute DRAM-gebunden",
       lgActiveP95: "Aktiv (P95)", lgConsumedP95: "Belegt (P95)", lgConfigured: "Konfiguriert (eingeschaltete VMs)",
@@ -1150,6 +1173,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     $("subtitle").textContent = t("subtitle", M.vcenters.join(", ") || "–", dt(tMin), dt(tMax),
       dt(Date.parse(M.generatedUtc) / 1000)) + (M.support ? " • " + t("support", M.support) : "");
     $("lgThr").textContent = $("lgThr0").textContent = t("lgGuidance", thr(THR));
+    $("lgCand").textContent = t("lgCand", thr(CAND));
     $("footer").textContent = t("footer", M.builder, num(M.bucketHours), num(INTERVAL), thr(CAND), thr(THR), tierLabel(),
       thr(M.coldPct), thr(M.hotPct));
     var q = $("vmSearch");
@@ -1360,7 +1384,9 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
   }
 
   // ---------- small-multiple chart ----------
-  function panelChart(container, title, subtitle, badge, pts, t0, t1, tipRows, second, yTop) {
+  // limit: the dashed line, THR (hot set against DRAM) unless a chart plots another metric.
+  // A point without .max draws no peak area.
+  function panelChart(container, title, subtitle, badge, pts, t0, t1, tipRows, second, yTop, limit) {
     var panel = el("div", { class: "panel" });
     var ph = el("div", { class: "ph" });
     var left = el("div", { style: "min-width:0" });
@@ -1393,12 +1419,13 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
     pts.forEach(function (p, i) { if (i && p.t - pts[i - 1].t > gap) { segs.push(cur); cur = []; } cur.push(p); });
     segs.push(cur);
     segs.forEach(function (sg) {
+      if (sg[0].max == null) return;
       var area = "M" + x(sg[0].t) + "," + y(0);
       sg.forEach(function (p) { area += "L" + x(p.t).toFixed(1) + "," + y(p.max).toFixed(1); });
       area += "L" + x(sg[sg.length - 1].t) + "," + y(0) + "Z";
       svg.appendChild(sv("path", { d: area, fill: "var(--series-1-fill)", stroke: "none" }));
     });
-    var thrY = y(THR);
+    var thrY = y(limit == null ? THR : limit);
     svg.appendChild(sv("line", { x1: ml, x2: W - mr, y1: thrY, y2: thrY, stroke: "var(--ink-2)", "stroke-width": 1.25, "stroke-dasharray": "5 4" }));
     segs.forEach(function (sg) {
       if (sg.length === 1) { svg.appendChild(sv("circle", { cx: x(sg[0].t), cy: y(sg[0].v), r: 2.5, fill: "var(--series-1)" })); return; }
@@ -1899,6 +1926,7 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       renderDecision(clist);
       renderQuad(hs);
       renderCandidates(clist);
+      renderClusterTrend(clist, axisStart, tMax);
       renderSizing(clist);
     }
     if (advanced()) {
@@ -1919,6 +1947,31 @@ th.gs, td.gs { border-left: 1px solid var(--axis); }
       return (b.coldMB || 0) - (a.coldMB || 0);
     });
   }
+  // ---------- active / consumed over time, per cluster ----------
+  // The decision metric per interval, on the cluster sums. A vMotion moves memory between two hosts
+  // of one cluster and cancels out here, which it does not on a host chart; those stay in Expert,
+  // because a host that was added or replaced only shows there.
+  function renderClusterTrend(clist, t0, t1) {
+    var box = $("clusterPanels"); box.textContent = "";
+    $("clusterTrendHint").textContent = t("clusterTrendHint", thr(CAND));
+    var rows = rankClusters(clist.filter(function (c) { return c.activeOverCons != null; }));
+    if (!rows.length) { box.appendChild(el("div", { class: "empty" }, t("candEmpty"))); return; }
+    rows.forEach(function (c) {
+      // consMB is null where a host had no consumed statistics: the cluster sum would understate it
+      var pts = c.pts.filter(function (p) { return p.consMB > 0; }).map(function (p) {
+        return { t: p.t, v: p.avgActiveMB / p.consMB * 100, activeMB: p.avgActiveMB, consMB: p.consMB,
+          coldMB: p.coldMB, onNvmeMB: p.onNvmeMB, nvme: p.nvme, dram: p.dram, n: p.n };
+      });
+      var sub = t("fActCons") + " " + pct(c.activeOverCons) + " • " + num(c.hosts.length) + " × " + t("ttHosts") + " • " +
+        szu(c.dram) + " DRAM" + (c.nvme ? " + " + szu(c.nvme) + " NVMe" : "");
+      panelChart(box, c.name, sub, c.candidate, pts, t0, t1, function (p) {
+        return [[t("fActCons"), pct(p.v)], [t("ttActiveAvg"), szu(p.activeMB)], [t("ttConsumed"), szu(p.consMB)],
+          [t("fCold"), szu(p.coldMB)], [t("ttOnNvme"), p.nvme ? szu(p.onNvmeMB) : "–"],
+          [t("ttHostsWithData"), num(p.n)], [t("ttClusterDram"), szu(p.dram)]];
+      }, null, 100, CAND);
+    });
+  }
+
   // DRAM the cluster would end up with: the smaller purchase on hosts without a tier, unchanged
   // DRAM on the hosts that already run one.
   function afterTiering(c) { return (c.uSizing ? c.uSizing.needed : 0) + (c.dram - c.uDram); }

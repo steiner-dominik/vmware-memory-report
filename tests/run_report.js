@@ -44,4 +44,10 @@ console.log(JSON.stringify({
   kpis: (registry.kpis ? registry.kpis.children : []).map(text),
   sizing: registry.sizingTable ? rows(registry.sizingTable) : [],
   candidates: (registry.candList ? registry.candList.children : []).length,
+  // per cluster: the panel title and the path of the active / consumed line
+  clusterTrend: (registry.clusterPanels ? registry.clusterPanels.children : []).filter((p) => p.className === "panel").map((p) => {
+    const svg = p.children.find((c) => c.tagName === "SVG");
+    const line = svg ? svg.children.find((c) => c.tagName === "PATH" && c.attrs.stroke === "var(--series-1)") : null;
+    return { title: text(p.children[0]), line: line ? line.attrs.d : null };
+  }),
 }, null, 1));

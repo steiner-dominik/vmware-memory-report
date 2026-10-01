@@ -174,8 +174,9 @@ The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmwa
 * **Memory tiering candidates:** every cluster by active vs. consumed memory, most cold memory first.
   * *Strong candidate* ≤ 20% · *Candidate* ≤ 40% · *Limited benefit* ≤ 60% · *Little benefit* above that
   * A second badge says whether the hot set still fits today's DRAM (*Hot set fits DRAM* / *DRAM-bound today*). That one only limits tiering on hosts you already own.
+* **Active ÷ consumed over time, per cluster:** the decision metric per interval, summed over the cluster's hosts, with the 40% candidate line. A vMotion between hosts of the same cluster cancels out here, so this is the line to judge a cluster by.
 * **Sizing:** `DRAM needed`, `DRAM saved` (conservative, and measured), `Usable extra memory` per cluster — the two buying decisions, with numbers.
-* **Host charts:** active and consumed memory per host over time, with the 50% feasibility line.
+* **Host charts:** active and consumed memory per host over time, with the 50% feasibility line. A host that was added or replaced shows here, not in the cluster chart.
 * **Hot set after a failure:** does the working set still fit the DRAM that survives a host or site failure? A cluster sized right at the limit fails that test, and the failure mode is the tier serving hot pages while the cluster is already degraded.
 * **Weekday × hour heatmap:** when the working set is hottest — active as a share of *consumed*, so it shows when a tier is under the most pressure rather than when the hosts are merely busy.
 * **Hosts and VMs tables:** searchable, sortable, exportable to CSV.
@@ -189,9 +190,10 @@ The image bundles the scripts too: `docker run --rm ghcr.io/steiner-dominik/vmwa
 * **Summary** is the page for the customer or the budget owner: the verdict, the two buying
   decisions and where the memory goes. Nothing to configure.
 * **Simple** (the default) adds the decision board: the three questions per cluster, which runs
-  out first per host, the candidate bars and the sizing table.
+  out first per host, the candidate bars, active ÷ consumed over time per cluster and the sizing
+  table.
 * **Expert** adds everything an infrastructure engineer wants to check before an order: host
-  and cluster charts, the weekday × hour heatmap, the host table grouped by the question each
+  charts, the weekday × hour heatmap, the host table grouped by the question each
   column answers, per-VM tables, collector runs and a data-quality panel.
 
 The choice is remembered per browser.
