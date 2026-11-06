@@ -1,0 +1,23 @@
+# Automated dependency updates. The collector and report use only the Python
+# standard library, so there are no package manifests: Dependabot watches the
+# base image and the GitHub Actions. Fresh releases wait a few days (cooldown);
+# security updates arrive immediately.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 5
+    groups:
+      github-actions:
+        patterns: ["*"]

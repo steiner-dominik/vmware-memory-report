@@ -4,6 +4,17 @@ Container and Home Assistant app releases use `YY.MM.NN` (tag `vYY.MM.NN`), wher
 `NN` counts releases within the month. The PowerShell and Python scripts are
 attached to every release.
 
+## 26.11.01
+
+Maintenance release: a rebuild on current base images.
+
+- **Security updates from the base image**: Python 3.14.7 → 3.14.10 and
+  Alpine 3.24.2 → 3.24.4 (OpenSSL 3.5.9, musl fixes). No changes to the
+  collector, the report or the scripts.
+- **Automated dependency updates**: Dependabot now proposes updates for the
+  base image and the GitHub Actions weekly; the CI actions are on their
+  current releases.
+
 ## 26.10.01
 
 The decision metric over time, per cluster.
