@@ -5,7 +5,7 @@
 # environment variables). The collector is the unchanged python/memtier.py;
 # container/memtier_app.py adds the schedule, the web interface and the Home
 # Assistant entities. Standard library only, so there is nothing to install.
-FROM python:3.14-alpine
+FROM python:3.15-alpine
 
 ARG VERSION=dev
 ARG REVISION=unknown
